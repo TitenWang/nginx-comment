@@ -561,8 +561,16 @@ ngx_http_create_request(ngx_connection_t *c)
         return NULL;
     }
 
+    /*创建用于缓存变量值的数组，variables*/
     cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
 
+    /*缓存变量值的variables数组的下标，与索引化的，表示变量名的数组下标是一一对应的*/
+    /*
+     * 2016/06/04 疑问:缓存变量值的variables数组是和请求挂钩的，但是表示变量名的数组是全局的。如果有一个变量在当前请求中
+     * 没有使用，那r->variables数组也需要为其预留位置吗?
+     * 2016/06/09 解答: 需要，两个数组的对于同一个下标的元素一一对应，形成var_name和var_value对。如果一个变量在当前
+     * 请求中没有使用，此时在r->variables其值为空("")。
+     */
     r->variables = ngx_pcalloc(r->pool, cmcf->variables.nelts
                                         * sizeof(ngx_http_variable_value_t));
     if (r->variables == NULL) {

@@ -24,16 +24,16 @@ typedef struct {
     ngx_str_t   value;
 } ngx_keyval_t;
 
-
+/*存储变量值的结构体*/
 typedef struct {
-    unsigned    len:28;
+    unsigned    len:28;  /*变量值必须是在一段连续内存中存放的字符串，len表示长度*/
 
-    unsigned    valid:1;
-    unsigned    no_cacheable:1;
-    unsigned    not_found:1;
+    unsigned    valid:1;  /*valid为1，表示该变量是被解析过的，且数据可用*/
+    unsigned    no_cacheable:1;  /*no_cacheable为1表示该变量不可以被缓存的*/
+    unsigned    not_found:1;  /*表示该变量被解析过，但是没有解析到相应的值*/
     unsigned    escape:1;
 
-    u_char     *data;
+    u_char     *data;  /*指向变量值所在内存的起始地址，与len成员配合使用*/
 } ngx_variable_value_t;
 
 

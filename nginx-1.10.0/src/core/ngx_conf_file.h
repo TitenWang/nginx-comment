@@ -116,7 +116,7 @@ typedef char *(*ngx_conf_handler_pt)(ngx_conf_t *cf,
 
 struct ngx_conf_s {
     char                 *name;
-    ngx_array_t          *args;
+    ngx_array_t          *args;  //args动态数组保存的是当前配置行的所有配置参数，即配置项及其参数
 
     ngx_cycle_t          *cycle;
     ngx_pool_t           *pool;

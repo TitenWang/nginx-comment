@@ -2034,6 +2034,10 @@ ngx_http_parse_set_cookie_lines(ngx_array_t *headers, ngx_str_t *name,
     return NGX_DECLINED;
 }
 
+/*
+ * 把请求中GET /download/nginx-1.9.2.rar?st=xhWL03HbtjrojpEAfiD6Mw&e=1452139931 HTTP/1.1的st和e形成变量
+ * $arg_st #arg_e，value分别为xhWL03HbtjrojpEAfiD6Mw 1452139931即$arg_st=xhWL03HbtjrojpEAfiD6Mw，$arg_e=1452139931 .
+ */
 
 ngx_int_t
 ngx_http_arg(ngx_http_request_t *r, u_char *name, size_t len, ngx_str_t *value)
@@ -2044,6 +2048,10 @@ ngx_http_arg(ngx_http_request_t *r, u_char *name, size_t len, ngx_str_t *value)
         return NGX_DECLINED;
     }
 
+    /*
+     * r->args.data指向原始http字符流中的url参数的起始地址,即上面的"st=...."中的s字符处
+     * r->args.len表示url参数的总长度
+     */
     p = r->args.data;
     last = p + r->args.len;
 
@@ -2057,17 +2065,24 @@ ngx_http_arg(ngx_http_request_t *r, u_char *name, size_t len, ngx_str_t *value)
             return NGX_DECLINED;
         }
 
+        /*此时p指向的是此次需要查找的url参数的的首地址*/
         if ((p == r->args.data || *(p - 1) == '&') && *(p + len) == '=') {
 
+            /*p + len + 1指向的便是url参数的值*/
             value->data = p + len + 1;
 
+            /*
+             * 执行完ngx_strlchr这个函数后，如果p不为NULL,则p指向的是连接两个url参数的 & 字符处;
+             * 如果p为NULL,表明该url参数是请求中所有url参数的最后一个
+             */
             p = ngx_strlchr(p, last, '&');
 
+            /*此次查找的url参数是请求中的最后一个url参数*/
             if (p == NULL) {
                 p = r->args.data + r->args.len;
             }
 
-            value->len = p - value->data;
+            value->len = p - value->data;  //计算此次查找的url参数值的长度
 
             return NGX_OK;
         }

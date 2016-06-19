@@ -328,7 +328,7 @@ ngx_http_script_variables_count(ngx_str_t *value)
     return n;
 }
 
-
+/*编译变量对应的复杂值参数的函数*/
 ngx_int_t
 ngx_http_script_compile(ngx_http_script_compile_t *sc)
 {
@@ -336,16 +336,19 @@ ngx_http_script_compile(ngx_http_script_compile_t *sc)
     ngx_str_t    name;
     ngx_uint_t   i, bracket;
 
+    /*初始化三个动态数组*/
     if (ngx_http_script_init_arrays(sc) != NGX_OK) {
         return NGX_ERROR;
     }
 
+    /*遍历变量对应的复杂值参数*/
     for (i = 0; i < sc->source->len; /* void */ ) {
 
         name.len = 0;
 
         if (sc->source->data[i] == '$') {
 
+            /*++i == sc->source->len，表明变量值以'$'字符结束,不合法*/
             if (++i == sc->source->len) {
                 goto invalid_variable;
             }
@@ -375,29 +378,43 @@ ngx_http_script_compile(ngx_http_script_compile_t *sc)
             }
 #endif
 
+            /* 
+             * 假设有个这样一个配置proxy_pass $host$uritest， 
+             * 我们这里其实是想用nginx的两个内置变量，host和uri，但是对于$uritest来说，如果我们 
+             * 不加处理，那么在函数里很明显会将uritest这个整体作为一个变量，这显然不是我们想要的。 
+             * 那怎么办呢？nginx里面使用"{}"来把一些变量包裹起来，避免跟其他的字符串混在一起，在此处 
+             * 我们可以这样用${uri}test，当然变量之后是数字，字母或者下划线之类的字符才有必要这样处理 
+             * 代码中体现的很明显。 
+             */
             if (sc->source->data[i] == '{') {
-                bracket = 1;
+                bracket = 1; //置有'{}'的标志位
 
+                /*如果以'{'结尾，表名变量值是一个无效值*/
                 if (++i == sc->source->len) {
                     goto invalid_variable;
                 }
 
+                /*保存变量值(其实是另一个变量的名字)，上面的'++i'已经让i指向了变量名开始处*/
                 name.data = &sc->source->data[i];
 
             } else {
                 bracket = 0;
-                name.data = &sc->source->data[i];
+                name.data = &sc->source->data[i];  /*保存变量值(其实是另一个变量的名字)*/
             }
 
+            /*
+             * 上面的代码表明值参数中已经找到了一个变量，此处遍历找到的变量名
+             */
             for ( /* void */ ; i < sc->source->len; i++, name.len++) {
                 ch = sc->source->data[i];
 
-                if (ch == '}' && bracket) {
-                    i++;
-                    bracket = 0;
+                if (ch == '}' && bracket) {  //ch == '}' && bracket为真，表明用括号括起来的变量名已经结束
+                    i++;  //定位到变量名下一个位置
+                    bracket = 0;  //标志位清零
                     break;
                 }
 
+                /*满足下面条件，表明是当前字符仍然是变量值中某个变量名的一部分*/
                 if ((ch >= 'A' && ch <= 'Z')
                     || (ch >= 'a' && ch <= 'z')
                     || (ch >= '0' && ch <= '9')
@@ -406,9 +423,10 @@ ngx_http_script_compile(ngx_http_script_compile_t *sc)
                     continue;
                 }
 
-                break;
+                break;   //没有用括号括起来的情况下，已经遍历完变量值中某个变量名的全部
             }
 
+            /*bracket如果为1，表明只有'{',而没有与之配对的'}'，错误*/
             if (bracket) {
                 ngx_conf_log_error(NGX_LOG_EMERG, sc->cf, 0,
                                    "the closing bracket in \"%V\" "
@@ -420,8 +438,10 @@ ngx_http_script_compile(ngx_http_script_compile_t *sc)
                 goto invalid_variable;
             }
 
+            /*执行到这里，表明变量值中某一个变量名已经解析完毕*/
             sc->variables++;
 
+            /*将解析出来的这个变量进行进一步处理*/
             if (ngx_http_script_add_var_code(sc, &name) != NGX_OK) {
                 return NGX_ERROR;
             }
@@ -429,6 +449,9 @@ ngx_http_script_compile(ngx_http_script_compile_t *sc)
             continue;
         }
 
+        /*程序执行到这里意味着解析一个变量名完毕或者还没有遇到变量，是普通字符串(常量字符串)*/
+        
+        /*这里涉及到请求参数部分的处理，比较简单。这个地方一般是在一次分离变量或者常量结束后，后面紧跟'?'的情况 */
         if (sc->source->data[i] == '?' && sc->compile_args) {
             sc->args = 1;
             sc->compile_args = 0;
@@ -442,14 +465,19 @@ ngx_http_script_compile(ngx_http_script_compile_t *sc)
             continue;
         }
 
+        /*保存变量值中的常量字符串*/
         name.data = &sc->source->data[i];
 
         while (i < sc->source->len) {
 
+            /*如果出现'$',表明下一个变量开始了，break*/
             if (sc->source->data[i] == '$') {
                 break;
             }
 
+            /*
+             * 这里涉及到请求参数部分的处理，
+             */
             if (sc->source->data[i] == '?') {
 
                 sc->args = 1;
@@ -463,8 +491,11 @@ ngx_http_script_compile(ngx_http_script_compile_t *sc)
             name.len++;
         }
 
+        /*程序执行到这里，意味着当前遇到的常量字符串解析完毕*/
+        /*sc->size保存的是变量值中常量字符串的总长度*/
         sc->size += name.len;
 
+        /*对于常量字符串，用ngx_http_script_add_copy_code进行编译*/
         if (ngx_http_script_add_copy_code(sc, &name, (i == sc->source->len))
             != NGX_OK)
         {
@@ -556,12 +587,13 @@ ngx_http_script_init_arrays(ngx_http_script_compile_t *sc)
 
     if (sc->flushes && *sc->flushes == NULL) {
         n = sc->variables ? sc->variables : 1;
-        *sc->flushes = ngx_array_create(sc->cf->pool, n, sizeof(ngx_uint_t));
+        *sc->flushes = ngx_array_create(sc->cf->pool, n, sizeof(ngx_uint_t));  //申请存放变量索引号index的动态数组
         if (*sc->flushes == NULL) {
             return NGX_ERROR;
         }
     }
 
+    /*从上文中我们可以看到sc->lengths指向的complex->length地址，complex->length为NULL,则*sc->lengths也会NULL*/
     if (*sc->lengths == NULL) {
         n = sc->variables * (2 * sizeof(ngx_http_script_copy_code_t)
                              + sizeof(ngx_http_script_var_code_t))
@@ -573,6 +605,7 @@ ngx_http_script_init_arrays(ngx_http_script_compile_t *sc)
         }
     }
 
+    /**sc->values其实就是lcf->codes*/
     if (*sc->values == NULL) {
         n = (sc->variables * (2 * sizeof(ngx_http_script_copy_code_t)
                               + sizeof(ngx_http_script_var_code_t))
@@ -587,7 +620,7 @@ ngx_http_script_init_arrays(ngx_http_script_compile_t *sc)
         }
     }
 
-    sc->variables = 0;
+    sc->variables = 0;   //这里会将该变量清零，因为后续每编译一个值参数的变量，会利用该值进行一个统计
 
     return NGX_OK;
 }
@@ -675,10 +708,14 @@ ngx_http_script_add_code(ngx_array_t *codes, size_t size, void *code)
     return new;
 }
 
-
+/*
+ * 变量值中的变量字符串用ngx_http_script_add_var_code进行编译处理，
+ * 普通字符串用ngx_http_script_add_copy_code进行编译处理
+ * ngx_http_script_add_copy_code - 处理参数中的固定字符串。这些字符串要和变量的值拼接出最终参数值。
+ */
 static ngx_int_t
 ngx_http_script_add_copy_code(ngx_http_script_compile_t *sc, ngx_str_t *value,
-    ngx_uint_t last)
+    ngx_uint_t last)  //last标明是否是变量值中的最后一部分常量字符串
 {
     u_char                       *p;
     size_t                        size, len, zero;
@@ -687,28 +724,37 @@ ngx_http_script_add_copy_code(ngx_http_script_compile_t *sc, ngx_str_t *value,
     zero = (sc->zero && last);
     len = value->len + zero;
 
+    /*从sc->lengths中申请sizeof(ngx_http_script_copy_code_t)大小内存用于存放编译变量值长度的结构体*/
     code = ngx_http_script_add_code(*sc->lengths,
                                     sizeof(ngx_http_script_copy_code_t), NULL);
     if (code == NULL) {
         return NGX_ERROR;
     }
 
+    /* 被调用时返回 len */
     code->code = (ngx_http_script_code_pt) ngx_http_script_copy_len_code;
     code->len = len;
 
+    /* 
+     * 固定字符串和用于获取此固定字符串的脚本需要的存储空间 ，这里比ngx_http_script_copy_code_t
+     * 结构多分配了size - ngx_http_script_copy_code_t空间来存放value数据
+     */
     size = (sizeof(ngx_http_script_copy_code_t) + len + sizeof(uintptr_t) - 1)
             & ~(sizeof(uintptr_t) - 1);
 
+    /* 从 values 内存块(即lcf->codes数组)中开辟 size 字节的空间用于存储固定字符串和操作脚本 */
     code = ngx_http_script_add_code(*sc->values, size, &sc->main);
     if (code == NULL) {
         return NGX_ERROR;
     }
 
+    /* 被调用时将其后的固定字符串返回，其后的固定字符串在后面后ngx_cpymem进行赋值拷贝置目标内存处*/
     code->code = ngx_http_script_copy_code;
     code->len = len;
 
+    /* 将固定字符串暂存入 values 中 */
     p = ngx_cpymem((u_char *) code + sizeof(ngx_http_script_copy_code_t),
-                   value->data, value->len);
+                   value->data, value->len);  //把value数据拷贝到ngx_http_script_copy_code_t后面
 
     if (zero) {
         *p = '\0';
@@ -718,7 +764,7 @@ ngx_http_script_add_copy_code(ngx_http_script_compile_t *sc, ngx_str_t *value,
     return NGX_OK;
 }
 
-
+/*获取变量值中普通字符串的长度*/
 size_t
 ngx_http_script_copy_len_code(ngx_http_script_engine_t *e)
 {
@@ -731,7 +777,10 @@ ngx_http_script_copy_len_code(ngx_http_script_engine_t *e)
     return code->len;
 }
 
-
+/*
+ * ngx_http_script_copy_code为拷贝变量到e->buf中，
+ * ngx_http_script_copy_var_code为拷贝变量对应的value，然后也拷贝到e->bufz中
+ */
 void
 ngx_http_script_copy_code(ngx_http_script_engine_t *e)
 {
@@ -742,11 +791,12 @@ ngx_http_script_copy_code(ngx_http_script_engine_t *e)
 
     p = e->pos;
 
-    if (!e->skip) {
+    if (!e->skip) { //在该函数中无需拷贝数据
         e->pos = ngx_copy(p, e->ip + sizeof(ngx_http_script_copy_code_t),
                           code->len);
     }
 
+    /*偏移e->ip使之指向下一个指令结构体首地址*/
     e->ip += sizeof(ngx_http_script_copy_code_t)
           + ((code->len + sizeof(uintptr_t) - 1) & ~(sizeof(uintptr_t) - 1));
 
@@ -761,12 +811,14 @@ ngx_http_script_add_var_code(ngx_http_script_compile_t *sc, ngx_str_t *name)
     ngx_int_t                    index, *p;
     ngx_http_script_var_code_t  *code;
 
+    /*索引化该变量*/
     index = ngx_http_get_variable_index(sc->cf, name);
 
     if (index == NGX_ERROR) {
         return NGX_ERROR;
     }
 
+    /*存储该变量的索引号*/
     if (sc->flushes) {
         p = ngx_array_push(*sc->flushes);
         if (p == NULL) {
@@ -776,15 +828,18 @@ ngx_http_script_add_var_code(ngx_http_script_compile_t *sc, ngx_str_t *name)
         *p = index;
     }
 
+    /*从sc->lengths数组中申请sizeof(ngx_http_script_var_code_t)大小的空间存放获取变量对应值长度的脚本*/
     code = ngx_http_script_add_code(*sc->lengths,
                                     sizeof(ngx_http_script_var_code_t), NULL);
     if (code == NULL) {
         return NGX_ERROR;
     }
 
+    /*ngx_http_script_copy_var_len_code用于获取index对应变量值的长度*/
     code->code = (ngx_http_script_code_pt) ngx_http_script_copy_var_len_code;
     code->index = (uintptr_t) index;
 
+    /*从sc->values申请sizeof(ngx_http_script_var_code_t)大小的空间存放获取变量值的脚本*/
     code = ngx_http_script_add_code(*sc->values,
                                     sizeof(ngx_http_script_var_code_t),
                                     &sc->main);
@@ -792,13 +847,17 @@ ngx_http_script_add_var_code(ngx_http_script_compile_t *sc, ngx_str_t *name)
         return NGX_ERROR;
     }
 
+    /*ngx_http_script_copy_var_code用于获取index对应变量的值*/
     code->code = ngx_http_script_copy_var_code;
     code->index = (uintptr_t) index;
 
     return NGX_OK;
 }
 
-
+/*
+ * 获取index对应变量值的长度,因为对于set命令中出现的变量是肯定要使用的，因此在之前已经对该变量进行了索引化，
+ * 所以获取变量的时候可以直接通过索引下标从r->variables数组中获取对应的变量
+ */
 size_t
 ngx_http_script_copy_var_len_code(ngx_http_script_engine_t *e)
 {
@@ -816,6 +875,7 @@ ngx_http_script_copy_var_len_code(ngx_http_script_engine_t *e)
         value = ngx_http_get_flushed_variable(e->request, code->index);
     }
 
+    /*返回变量值的长度*/
     if (value && !value->not_found) {
         return value->len;
     }
@@ -823,7 +883,9 @@ ngx_http_script_copy_var_len_code(ngx_http_script_engine_t *e)
     return 0;
 }
 
-
+/*
+ * 用于获取index对应变量值
+ */
 void
 ngx_http_script_copy_var_code(ngx_http_script_engine_t *e)
 {
@@ -833,6 +895,7 @@ ngx_http_script_copy_var_code(ngx_http_script_engine_t *e)
 
     code = (ngx_http_script_var_code_t *) e->ip;
 
+    /*将e->ip往后移sizeof(ngx_http_script_var_code_t)，指向下一个指令结构体*/
     e->ip += sizeof(ngx_http_script_var_code_t);
 
     if (!e->skip) {
@@ -846,7 +909,7 @@ ngx_http_script_copy_var_code(ngx_http_script_engine_t *e)
 
         if (value && !value->not_found) {
             p = e->pos;
-            e->pos = ngx_copy(p, value->data, value->len);
+            e->pos = ngx_copy(p, value->data, value->len); //将变量值拷贝到e->buf中，因为e->pos是指向e->buf.data中的
 
             ngx_log_debug2(NGX_LOG_DEBUG_HTTP,
                            e->request->connection->log, 0,
@@ -1601,17 +1664,18 @@ true_value:
     return;
 }
 
-
+/*该函数为编译带有变量的复杂值参数的指令方法*/
 void
 ngx_http_script_complex_value_code(ngx_http_script_engine_t *e)
 {
     size_t                                 len;
     ngx_http_script_engine_t               le;
-    ngx_http_script_len_code_pt            lcode;
+    ngx_http_script_len_code_pt            lcode;   //获取变量值长度的函数指针
     ngx_http_script_complex_value_code_t  *code;
 
     code = (ngx_http_script_complex_value_code_t *) e->ip;
 
+    /*移动e->ip使之指向下一个指令结构体的首地址*/
     e->ip += sizeof(ngx_http_script_complex_value_code_t);
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, e->request->connection->log, 0,
@@ -1619,31 +1683,41 @@ ngx_http_script_complex_value_code(ngx_http_script_engine_t *e)
 
     ngx_memzero(&le, sizeof(ngx_http_script_engine_t));
 
+    /*
+     * 将code->lengths数组作为ip，即待执行的用于获取变量值对应长度的脚本指令,这和complex->lengths是指向一样的地址,
+     * 在ngx_http_script_compile中会将复杂值参数中出现的变量进行索引化，并将获取该变量值长度的函数指针设置在
+     * code->lengths(即complex->lengths)中,对于复杂值参数中出现的常量字符串，在ngx_http_script_compile也会将获取
+     * 值长度的函数设置在code->lengths(即complex->lengths)中。
+     */
     le.ip = code->lengths->elts;
     le.line = e->line;
     le.request = e->request;
     le.quote = e->quote;
 
+    /*计算【set $a "${b}test"】中变量a的复杂变量值的总长度，即常量字符串长度和变量a的值的长度总和*/
     for (len = 0; *(uintptr_t *) le.ip; len += lcode(&le)) {
-        lcode = *(ngx_http_script_len_code_pt *) le.ip;
+        lcode = *(ngx_http_script_len_code_pt *) le.ip;       
     }
 
+    /*e->buf中存放的就是变量a的值，即变量b的值展开后和常量字符串test组合后的内容*/
     e->buf.len = len;
-    e->buf.data = ngx_pnalloc(e->request->pool, len);
+    e->buf.data = ngx_pnalloc(e->request->pool, len);   //用a的值总长度申请内容，存放对应的值
     if (e->buf.data == NULL) {
         e->ip = ngx_http_script_exit;
         e->status = NGX_HTTP_INTERNAL_SERVER_ERROR;
         return;
     }
 
+    /*e->pos指向e->buf的内容*/
     e->pos = e->buf.data;
 
+    /*用于存储变量值的e->sp也指向e->buf，因为e->sp中对应的变量值要在编译变量名的时候进行获取*/
     e->sp->len = e->buf.len;
     e->sp->data = e->buf.data;
     e->sp++;
 }
 
-
+/*编译普通变量值的回调函数*/
 void
 ngx_http_script_value_code(ngx_http_script_engine_t *e)
 {
@@ -1651,32 +1725,39 @@ ngx_http_script_value_code(ngx_http_script_engine_t *e)
 
     code = (ngx_http_script_value_code_t *) e->ip;
 
+    /*将ip往后偏移sizeof(ngx_http_script_value_code_t)，指向对应编译变量名的结构体处*/
     e->ip += sizeof(ngx_http_script_value_code_t);
 
+    /*将变量值临时缓存在栈中*/
     e->sp->len = code->text_len;
     e->sp->data = (u_char *) code->text_data;
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, e->request->connection->log, 0,
                    "http script value: \"%v\"", e->sp);
-
+    /*栈指针后移*/
     e->sp++;
 }
 
-
+/*编译变量名的回调函数*/
 void
 ngx_http_script_set_var_code(ngx_http_script_engine_t *e)
 {
     ngx_http_request_t          *r;
     ngx_http_script_var_code_t  *code;
 
+    /*e->ip强转为ngx_http_script_var_code_t*/
     code = (ngx_http_script_var_code_t *) e->ip;
 
+    /*e->ip加上sizeof(ngx_http_script_var_code_t)偏移指向下一个指令结构体*/
     e->ip += sizeof(ngx_http_script_var_code_t);
 
     r = e->request;
 
+    /*这也是为什么要先解析变量值，因此这样在解析变量名时就可以将其对应的值直接进行缓存*/
+    /*从栈中取出缓存的改变量名对应的变量值*/
     e->sp--;
 
+    /*转存变量值到r->variables数组中*/
     r->variables[code->index].len = e->sp->len;
     r->variables[code->index].valid = 1;
     r->variables[code->index].no_cacheable = 0;
@@ -1698,7 +1779,7 @@ ngx_http_script_set_var_code(ngx_http_script_engine_t *e)
 #endif
 }
 
-
+/*对于设置了set_handler方法的变量，它的脚本指令执行方法为ngx_http_script_var_set_handler_code*/
 void
 ngx_http_script_var_set_handler_code(ngx_http_script_engine_t *e)
 {
@@ -1709,10 +1790,13 @@ ngx_http_script_var_set_handler_code(ngx_http_script_engine_t *e)
 
     code = (ngx_http_script_var_handler_code_t *) e->ip;
 
+    /*移动ip，使之指向下一个待执行的脚本指令结构体*/
     e->ip += sizeof(ngx_http_script_var_handler_code_t);
 
+    /*获取当前变量对应的栈桢*/
     e->sp--;
 
+    /*将请求、变量值传递给set_handler方法设置变量值*/
     code->handler(e->request, e->sp, code->data);
 }
 

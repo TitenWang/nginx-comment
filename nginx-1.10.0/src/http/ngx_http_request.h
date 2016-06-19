@@ -226,6 +226,10 @@ typedef struct {
     ngx_array_t                       cookies;
 
     ngx_str_t                         server;
+    /*
+     * 解析完头部行后通过ngx_http_process_request_header来开辟空间从而来存储请求体中的内容，表示请求包体的大小，
+     * 如果为-1表示请求中不带包体
+     */
     off_t                             content_length_n;
     time_t                            keep_alive_n;
 
@@ -417,6 +421,13 @@ struct ngx_http_request_s {
     ngx_http_handler_pt               content_handler;
     ngx_uint_t                        access_code;
 
+    /*
+     * 我们知道，变量值的生命周期和请求是一样的，因此缓存变量值的地方一定是请求的结构体。
+     * ngx_http_request_s中的variables成员便是缓存变量值的数组，数组的下标就是索引号。
+     * 当http请求刚到达nginx的时候，就会创建缓存变量值的variables数组。
+     * 每一个http请求都必须为所有缓存的变量建立ngx_http_variable_value_t数组
+     * 唯有打算使用的变量才应该进行索引化，把它的值缓存到请求的variables数组中
+     */
     ngx_http_variable_value_t        *variables;
 
 #if (NGX_PCRE)

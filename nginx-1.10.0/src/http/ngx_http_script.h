@@ -13,11 +13,20 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
-
+/*
+ * ********************************脚本上下文(脚本引擎)**********************************
+ * ngx_http_script_engine_t是随着http请求到来时才创建的。所以它无法保存Nginx启动时就编译出来的脚本。
+ * 保存编译后脚本的这个工作实际上是由ngx_http_rewrite_loc_conf_t结构体承担的。
+ */
+/*
+ * 同一段脚本被编译进Nginx中，在不同的请求里执行时效果是完全不同的。
+ * 所以，每一个请求都必须有其独特的脚本执行上下文，或者称为脚本引擎。
+ * set 定义的外部变量只能作为索引变量使用
+ */
 typedef struct {
-    u_char                     *ip;
+    u_char                     *ip;  //指向待执行的脚本指令。
     u_char                     *pos;
-    ngx_http_variable_value_t  *sp;
+    ngx_http_variable_value_t  *sp;  //变量值构成的栈
 
     ngx_str_t                   buf;
     ngx_str_t                   line;
@@ -26,35 +35,35 @@ typedef struct {
     u_char                     *args;
 
     unsigned                    flushed:1;
-    unsigned                    skip:1;
+    unsigned                    skip:1;  // 置1表示没有需要拷贝的数据，直接跳过数据拷贝步骤
     unsigned                    quote:1;
     unsigned                    is_args:1;
     unsigned                    log:1;
 
-    ngx_int_t                   status;
-    ngx_http_request_t         *request;
+    ngx_int_t                   status;   //脚本引擎执行状态
+    ngx_http_request_t         *request;  //指向脚本引擎所属的http请求
 } ngx_http_script_engine_t;
 
 
 typedef struct {
     ngx_conf_t                 *cf;
-    ngx_str_t                  *source;
+    ngx_str_t                  *source;   //指向set第二个值参数字符串
 
-    ngx_array_t               **flushes;
-    ngx_array_t               **lengths;
-    ngx_array_t               **values;
+    ngx_array_t               **flushes;  //存放的是变量对应的index索引号
+    ngx_array_t               **lengths;  //存放用于获取变量对应值长度的脚本，每个元素为1个字节
+    ngx_array_t               **values;  //指向lcf->codes数组，存放用于获取变量值的脚本，每个元素为1个字节
 
-    ngx_uint_t                  variables;
+    ngx_uint_t                  variables;  //表示set第二个值参数中有多少个变量
     ngx_uint_t                  ncaptures;
     ngx_uint_t                  captures_mask;
-    ngx_uint_t                  size;
+    ngx_uint_t                  size;    //变量值中常量字符串的总长度
 
     void                       *main;
 
     unsigned                    compile_args:1;
     unsigned                    complete_lengths:1;
     unsigned                    complete_values:1;
-    unsigned                    zero:1;
+    unsigned                    zero:1;  //values数组运行时，得到的字符串是否追加'\0'结尾   
     unsigned                    conf_prefix:1;
     unsigned                    root_prefix:1;
 
@@ -91,16 +100,16 @@ typedef struct {
     uintptr_t                   len;
 } ngx_http_script_copy_code_t;
 
-
+/*编译变量名的结构体*/
 typedef struct {
-    ngx_http_script_code_pt     code;
-    uintptr_t                   index;
+    ngx_http_script_code_pt     code;  //code指向的脚本指令方法为ngx_http_script_set_var_code
+    uintptr_t                   index; //表示ngx_http_request_t结构体中被索引、缓存的变量值数组variables中，当前解析的、set设置的外部变量所在的索引号
 } ngx_http_script_var_code_t;
 
-
+/*对于已经定义过的内部变量，如果希望在配置文件中通过set修改其值，则使用如下结构体进行编译*/
 typedef struct {
-    ngx_http_script_code_pt     code;
-    ngx_http_set_variable_pt    handler;
+    ngx_http_script_code_pt     code;     //code指向的脚本指令方法为ngx_http_script_var_set_handler_code
+    ngx_http_set_variable_pt    handler;  //设置变量值的回调方法  
     uintptr_t                   data;
 } ngx_http_script_var_handler_code_t;
 
@@ -189,17 +198,18 @@ typedef struct {
 } ngx_http_script_if_code_t;
 
 
+/*编译复杂变量值(内嵌其他变量)的结构体*/
 typedef struct {
-    ngx_http_script_code_pt     code;
+    ngx_http_script_code_pt     code;      //code指向的脚本指令方法为ngx_http_script_complex_value_code   
     ngx_array_t                *lengths;
 } ngx_http_script_complex_value_code_t;
 
-
+/*编译变量值(纯字符串)的结构体*/
 typedef struct {
-    ngx_http_script_code_pt     code;
-    uintptr_t                   value;
-    uintptr_t                   text_len;
-    uintptr_t                   text_data;
+    ngx_http_script_code_pt     code;      //code指向的脚本指令方法为ngx_http_script_value_code
+    uintptr_t                   value;     //外部变量值如果为整数，则转为整数后赋值给value，否则value为0
+    uintptr_t                   text_len;  //外部变量值(set的第二个参数)的长度
+    uintptr_t                   text_data; //外部变量值的起始地址
 } ngx_http_script_value_code_t;
 
 

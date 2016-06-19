@@ -74,7 +74,7 @@ struct ngx_cycle_s {
     ngx_str_t                 conf_prefix;
     ngx_str_t                 prefix;
     ngx_str_t                 lock_file;
-    ngx_str_t                 hostname;
+    ngx_str_t                 hostname; //使用gethostname系统调用获得的主机名
 };
 
 

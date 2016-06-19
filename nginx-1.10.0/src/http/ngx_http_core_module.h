@@ -168,9 +168,13 @@ typedef struct {
 
     ngx_hash_t                 headers_in_hash;
 
-    ngx_hash_t                 variables_hash;
+    ngx_hash_t                 variables_hash;  /*存储变量名的hash表，调用ngx_http_get_variable方法会使用到*/
 
-    ngx_array_t                variables;       /* ngx_http_variable_t */
+    /*
+     * 存储索引过的变量的数组，各个使用变量模块都会在nginx启动时候从该数组中获得索引,这样，在nginx运行期间，
+     * 如果变量值没有没有被缓存，则会通过索引号在variables数组中找到这个变量的定义，再解析出变量值
+     */
+    ngx_array_t                variables;   
     ngx_uint_t                 ncaptures;
 
     ngx_uint_t                 server_names_hash_max_size;
@@ -179,7 +183,7 @@ typedef struct {
     ngx_uint_t                 variables_hash_max_size;
     ngx_uint_t                 variables_hash_bucket_size;
 
-    ngx_hash_keys_arrays_t    *variables_keys;
+    ngx_hash_keys_arrays_t    *variables_keys;  /*用于构造variables_hash散列表的初始结构体*/
 
     ngx_array_t               *ports;
 

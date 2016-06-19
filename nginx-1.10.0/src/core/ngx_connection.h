@@ -144,9 +144,9 @@ struct ngx_connection_s {
 
     int                 type;
 
-    struct sockaddr    *sockaddr;
-    socklen_t           socklen;
-    ngx_str_t           addr_text;
+    struct sockaddr    *sockaddr;  //客户端的sockaddr结构体
+    socklen_t           socklen;  //sockaddr结构体长度
+    ngx_str_t           addr_text;  //字符串形式的客户端ip地址
 
     ngx_str_t           proxy_protocol_addr;
 
@@ -154,6 +154,7 @@ struct ngx_connection_s {
     ngx_ssl_connection_t  *ssl;
 #endif
 
+    /*本机监听端口对应的sockaddr结构体，也就是listening对象中的sockaddr成员*/
     struct sockaddr    *local_sockaddr;
     socklen_t           local_socklen;
 

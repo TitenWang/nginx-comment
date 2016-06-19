@@ -4,6 +4,40 @@
  * Copyright (C) Nginx, Inc.
  */
 
+/*
+ *     变量是由模块定义的。"内部"变量是在nginx的代码中定义的，这里的定义相当于C语言中的声明，因为此时只是说明有
+ * 这么一个变量,并没有为这个变量分配用于存储变量值的内存。
+ *
+ *     什么时候会分配对应的内存呢?只有nginx内核对变量赋值的时候!原因如下:
+ * 1.变量值的大小是不确定的，提前分配会导致内存浪费或者不必要的内存拷贝;
+ * 2.一个变量很有可能在许多场景的请求中是用不到的，提前分配没有必要，一个请求多半只会使用全部变量中的一部分。
+ *
+ *     nginx内核是如何对变量进行赋值呢?nginx内核对变量进行赋值的时候采用的是"用时赋值"的策略，即当某个模块试图
+ * 获取变量值的时候才会对变量进行赋值，而不是接收到了完整的http头部后就开始解析变量。
+ * 
+ *     同一个变量对于不同的请求来说，它的值是不同的。因此一个变量值的生命周期和请求是一样。另外，对于一个请求
+ * 而言，首次使用到一个变量的时候才去解析、给它赋值、缓存变量值，之后获取变量值需要根据给定的策略决定是获取
+ * 缓存值还是重新解析。
+ * 
+ *     nginx提供了两种方式来找到变量:
+ * 1.根据索引值直接找到数组里对应的变量，索引的变量必须是定义过的。
+ * 2.根据变量名字符串进行hash后的值在hash表中进行查找
+ *     nginx框架会将所有的内部变量生成散列表，同时也允许各个模块将它们自己使用到的变量进行索引化，加快访问速度
+ */
+
+ /*
+  *     上面部分讲述了对变量定义和赋值的策略，那什么时候模块可以定义一个变量，或者说是往nginx框架中添加一个变量呢?
+  * 我们知道，变量是由模块定义的，并且是nginx内核完成变量赋值等操作，因此往nginx框架中添加变量有如下约束:
+  * 所有的http模块都必须在ngx_http_module_t结构体的preconfiguration回调方法中定义新的变量。
+  *
+  *     对于需要使用到变量的模块，会在解析配置文件这一步中将待使用的变量进行索引化，只有确定会使用到的变量才进行
+  * 索引化，另外，一个变量是否进行索引，是由使用它的模块决定，而不是定义它的模块决定的。使用索引变量的模块只知道
+  * 索引某个变量名，此时需要把相应的变量值解析方法等属性也设置好。
+  *
+  *     上面说过，变量值是随着请求不同而不同的，但是变量名对于所有的请求是一样的，对于每个变量名，采用
+  * ngx_http_variable_t结构体保存。所有的变量名都保存在全局唯一ngx_http_core_main_conf_t对象中，解析变量时也是围绕
+  * 这个对象进行的。
+  */
 
 #include <ngx_config.h>
 #include <ngx_core.h>
@@ -150,6 +184,7 @@ static ngx_int_t ngx_http_variable_time_local(ngx_http_request_t *r,
  * they are handled using dedicated entries
  */
 
+/*Nginx核心变量*/
 static ngx_http_variable_t  ngx_http_core_variables[] = {
 
     { ngx_string("http_host"), NULL, ngx_http_variable_header,
@@ -182,9 +217,11 @@ static ngx_http_variable_t  ngx_http_core_variables[] = {
 
     { ngx_string("host"), NULL, ngx_http_variable_host, 0, 0, 0 },
 
+    /*二进制形式的客户端ip*/
     { ngx_string("binary_remote_addr"), NULL,
       ngx_http_variable_binary_remote_addr, 0, 0, 0 },
 
+    /*字符串形式的客户端ip*/
     { ngx_string("remote_addr"), NULL, ngx_http_variable_remote_addr, 0, 0, 0 },
 
     { ngx_string("remote_port"), NULL, ngx_http_variable_remote_port, 0, 0, 0 },
@@ -355,6 +392,13 @@ ngx_http_variable_value_t  ngx_http_variable_true_value =
     ngx_http_variable("1");
 
 
+/* 
+ *     该方法用来定义一个变量，即在preconfiguration阶段回调函数中添加变量到全局唯一的ngx_http_core_main_conf_t中,
+ * cf参数的作用有两个: 1.用于找到ngx_http_core_main_conf_t结构体 2.分配相关结构体内存时可以使用cf的内存池
+ *
+ *     该方法的返回值的已经准备好的、用于定义变量的ngx_http_variable_t结构体，其中的name和flags成员已经设置好了，
+ * 此时需要定义变量的模块做的工作就是设置get_handler、set_handler、data等内容
+ */
 ngx_http_variable_t *
 ngx_http_add_variable(ngx_conf_t *cf, ngx_str_t *name, ngx_uint_t flags)
 {
@@ -370,9 +414,14 @@ ngx_http_add_variable(ngx_conf_t *cf, ngx_str_t *name, ngx_uint_t flags)
         return NULL;
     }
 
+    /*获取ngx_http_core_main_conf_t*/
     cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 
     key = cmcf->variables_keys->keys.elts;
+    /*
+     * 下面这个循环用于判断需要添加的变量是否已经存在hash表中了，如果存在，则判断变量是否是值可变的，
+     * 如果是，返回变量
+     */
     for (i = 0; i < cmcf->variables_keys->keys.nelts; i++) {
         if (name->len != key[i].key.len
             || ngx_strncasecmp(name->data, key[i].key.data, name->len) != 0)
@@ -391,25 +440,29 @@ ngx_http_add_variable(ngx_conf_t *cf, ngx_str_t *name, ngx_uint_t flags)
         return v;
     }
 
+    /*申请内存*/
     v = ngx_palloc(cf->pool, sizeof(ngx_http_variable_t));
     if (v == NULL) {
         return NULL;
     }
 
+    /*设置name*/
     v->name.len = name->len;
     v->name.data = ngx_pnalloc(cf->pool, name->len);
     if (v->name.data == NULL) {
         return NULL;
     }
 
+    /*转换成小写*/
     ngx_strlow(v->name.data, name->data, name->len);
 
     v->set_handler = NULL;
     v->get_handler = NULL;
     v->data = 0;
-    v->flags = flags;
+    v->flags = flags;  //设置flags
     v->index = 0;
 
+    /*将变量添加到hash表中*/
     rc = ngx_hash_add_key(cmcf->variables_keys, &v->name, v, 0);
 
     if (rc == NGX_ERROR) {
@@ -425,7 +478,13 @@ ngx_http_add_variable(ngx_conf_t *cf, ngx_str_t *name, ngx_uint_t flags)
     return v;
 }
 
-
+/*
+ * ***************************设置变量被索引，并获取索引号*******************************
+ *     调用这个函数意味着这个变量会被频繁的使用，希望Nginx处理这个变量时效率更高，体现在:
+ * 1. 变量值可以被缓存，重复读取时不用每次解析(第一次会解析)
+ * 2. 定义变量的解析方法时，可以通过索引号直接找到该变量的对应的解析方法，而不是通过hash表
+ * 3. Nginx初始化http请求时，需要为这个变量预分配ngx_http_variable_value_t结构体存储变量值
+ */
 ngx_int_t
 ngx_http_get_variable_index(ngx_conf_t *cf, ngx_str_t *name)
 {
@@ -439,10 +498,12 @@ ngx_http_get_variable_index(ngx_conf_t *cf, ngx_str_t *name)
         return NGX_ERROR;
     }
 
+    /*获取全局唯一的ngx_http_core_main_conf_t结构体*/
     cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 
     v = cmcf->variables.elts;
 
+    //首次cmcf->variables为空，需要进行初始化
     if (v == NULL) {
         if (ngx_array_init(&cmcf->variables, cf->pool, 4,
                            sizeof(ngx_http_variable_t))
@@ -452,17 +513,20 @@ ngx_http_get_variable_index(ngx_conf_t *cf, ngx_str_t *name)
         }
 
     } else {
+        /*如果变量在cmcf->variables数组中已存在，直接返回索引号*/
         for (i = 0; i < cmcf->variables.nelts; i++) {
             if (name->len != v[i].name.len
-                || ngx_strncasecmp(name->data, v[i].name.data, name->len) != 0)
+                || ngx_strncasecmp(name->data, v[i].name.data, name->len) != 0) //忽略大小写的比较
             {
                 continue;
             }
 
-            return i;
+            return i; //返回数组下标，即索引值
         }
     }
 
+    /*变量在cmcf->variables数组中不存在，需要分配内存和索引号，索引化该变量*/
+    /*从全局唯一的ngx_http_core_main_conf_t的variables成员申请一个用于存储变量名的内存*/
     v = ngx_array_push(&cmcf->variables);
     if (v == NULL) {
         return NGX_ERROR;
@@ -474,38 +538,52 @@ ngx_http_get_variable_index(ngx_conf_t *cf, ngx_str_t *name)
         return NGX_ERROR;
     }
 
+    //存储变量名
     ngx_strlow(v->name.data, name->data, name->len);
 
     v->set_handler = NULL;
     v->get_handler = NULL;
     v->data = 0;
     v->flags = 0;
-    v->index = cmcf->variables.nelts - 1;
+    v->index = cmcf->variables.nelts - 1;  //设置索引号，从小往大分配(数组下标)
 
     return v->index;
 }
 
-
+/*
+ *     根据ngx_http_get_variable_index获取索引号，然后通过该函数获取被索引过的变量的值。如果变量被解析过一次后其值
+ * 是会被缓存的，那么该方法再次被调用的时候会直接获取缓存过的值，而不是重新解析。
+ *     这个方式是忽略NGX_HTTP_VAR_NOCACHEABLE标志位的。
+ */
 ngx_http_variable_value_t *
 ngx_http_get_indexed_variable(ngx_http_request_t *r, ngx_uint_t index)
 {
     ngx_http_variable_t        *v;
     ngx_http_core_main_conf_t  *cmcf;
 
+    /*获取全局唯一的ngx_http_core_main_conf_t结构体*/
     cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
 
+    /*索引值非法，因为被索引的变量总共只有cmcf->variables.nelts个*/
     if (cmcf->variables.nelts <= index) {
         ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
                       "unknown variable index: %ui", index);
         return NULL;
     }
 
+    /*not_found或者valid为1，表示变量被解析过，直接返回缓存的变量值,not_found时其值为NULL*/
     if (r->variables[index].not_found || r->variables[index].valid) {
         return &r->variables[index];
     }
 
+    /*程序执行到这里表明变量之前没有被缓存，因此需要解析并缓存*/
     v = cmcf->variables.elts;
 
+    /* 
+     * 调用变量值解析函数，并将获取到的变量直接缓存到r->variables[index]中，index是从全局唯一的
+     * ngx_http_core_main_conf_t中variables获取到的索引值，这里直接将其作为缓存数组下标，表明
+     * cmcf->variables和r->variables两者的索引号是一一对应的。
+     */
     if (v[index].get_handler(r, &r->variables[index], v[index].data)
         == NGX_OK)
     {
@@ -516,25 +594,33 @@ ngx_http_get_indexed_variable(ngx_http_request_t *r, ngx_uint_t index)
         return &r->variables[index];
     }
 
+    /*获取变量值失败，置位not_found，返回NULL,这和上面获取缓存过的变量时是一致的*/
     r->variables[index].valid = 0;
     r->variables[index].not_found = 1;
 
     return NULL;
 }
 
-
+/*
+ *     与ngx_http_get_indexed_variable不同之处在于如果flags参数中设置了NGX_HTTP_VAR_NOCACHEABLE,那么
+ * ngx_http_get_indexed_variable方法会忽略该标志位而直接获取缓存的变量值，但是ngx_http_get_flushed_variable
+ * 则会判断变量是否被解析过且可以被缓存，如果是，会使用已经缓存过的变量值，否则会重新去解析获取变量值。
+ */
 ngx_http_variable_value_t *
 ngx_http_get_flushed_variable(ngx_http_request_t *r, ngx_uint_t index)
 {
     ngx_http_variable_value_t  *v;
 
+    /*获取缓存的变量值*/
     v = &r->variables[index];
 
+    /*变量值被解析过*/
     if (v->valid || v->not_found) {
-        if (!v->no_cacheable) {
+        if (!v->no_cacheable) {  //变量可以被缓存，则直接返回
             return v;
         }
 
+        /*不能被缓存，重新去解析，将标志位清零*/
         v->valid = 0;
         v->not_found = 0;
     }
@@ -542,7 +628,11 @@ ngx_http_get_flushed_variable(ngx_http_request_t *r, ngx_uint_t index)
     return ngx_http_get_indexed_variable(r, index);
 }
 
-
+/*
+ *     根据变量名称，从被hash过的散列表中找到相应的变量，如果变量是被索引过的，则先从索引数组中调用解析方法获取
+ * 变量值，否则调用其解析方法获取变量值，这里不存在缓存变量的可能。
+ * 同时如果变量属于5种特殊变量，也可以从本方法中获取解析出的值。
+ */
 ngx_http_variable_value_t *
 ngx_http_get_variable(ngx_http_request_t *r, ngx_str_t *name, ngx_uint_t key)
 {
@@ -550,16 +640,20 @@ ngx_http_get_variable(ngx_http_request_t *r, ngx_str_t *name, ngx_uint_t key)
     ngx_http_variable_value_t  *vv;
     ngx_http_core_main_conf_t  *cmcf;
 
+    /*获取全局唯一的ngx_http_core_main_conf_t结构体*/
     cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
 
+    /*从variables_hash表中查找对应的变量*/
     v = ngx_hash_find(&cmcf->variables_hash, key, name->data, name->len);
 
+    /*v不为NULL表明找到了被hash过的变量*/
     if (v) {
-        if (v->flags & NGX_HTTP_VAR_INDEXED) {
+        if (v->flags & NGX_HTTP_VAR_INDEXED) {  //NGX_HTTP_VAR_INDEXED为索引变量
             return ngx_http_get_flushed_variable(r, v->index);
 
         } else {
 
+            /*申请存放变量值的内存，并调用解析变量值的方法获取变量值*/
             vv = ngx_palloc(r->pool, sizeof(ngx_http_variable_value_t));
 
             if (vv && v->get_handler(r, vv, v->data) == NGX_OK) {
@@ -570,11 +664,13 @@ ngx_http_get_variable(ngx_http_request_t *r, ngx_str_t *name, ngx_uint_t key)
         }
     }
 
+    /*从hash表中没有找到该变量，有可能是特殊变量*/
     vv = ngx_palloc(r->pool, sizeof(ngx_http_variable_value_t));
     if (vv == NULL) {
         return NULL;
     }
 
+    /* http_ 表示该变量是请求中的http头部字段，从r->headers_in.headers链表中获取值，此时data作为存储变量名地址用*/
     if (name->len >= 5 && ngx_strncmp(name->data, "http_", 5) == 0) {
 
         if (ngx_http_variable_unknown_header_in(r, vv, (uintptr_t) name)
@@ -586,6 +682,7 @@ ngx_http_get_variable(ngx_http_request_t *r, ngx_str_t *name, ngx_uint_t key)
         return NULL;
     }
 
+    /* sent_http_ 表示该变量是发送响应中的http头部，从r->headers_out.headers链表中获取值，此时data作为存储变量名的地址用*/
     if (name->len >= 10 && ngx_strncmp(name->data, "sent_http_", 10) == 0) {
 
         if (ngx_http_variable_unknown_header_out(r, vv, (uintptr_t) name)
@@ -596,7 +693,7 @@ ngx_http_get_variable(ngx_http_request_t *r, ngx_str_t *name, ngx_uint_t key)
 
         return NULL;
     }
-
+    /* upstream_http_ 表示该变量是后端服务器http响应头部，从r->upstream->headers_in链表中获取值，此时data作为存储变量名的地址用*/
     if (name->len >= 14 && ngx_strncmp(name->data, "upstream_http_", 14) == 0) {
 
         if (ngx_http_upstream_header_variable(r, vv, (uintptr_t) name)
@@ -608,6 +705,7 @@ ngx_http_get_variable(ngx_http_request_t *r, ngx_str_t *name, ngx_uint_t key)
         return NULL;
     }
 
+    /* cookie_ 表示该变量是cookie头部中的某个项，从r->headers_in.cookies中获取值，此时data作为存储变量名的地址用*/
     if (name->len >= 7 && ngx_strncmp(name->data, "cookie_", 7) == 0) {
 
         if (ngx_http_variable_cookie(r, vv, (uintptr_t) name) == NGX_OK) {
@@ -630,6 +728,7 @@ ngx_http_get_variable(ngx_http_request_t *r, ngx_str_t *name, ngx_uint_t key)
         return NULL;
     }
 
+    /* arg_ 表示该变量是请求中的url参数，此时data作为存储变量名的地址用*/
     if (name->len >= 4 && ngx_strncmp(name->data, "arg_", 4) == 0) {
 
         if (ngx_http_variable_argument(r, vv, (uintptr_t) name) == NGX_OK) {
@@ -639,20 +738,22 @@ ngx_http_get_variable(ngx_http_request_t *r, ngx_str_t *name, ngx_uint_t key)
         return NULL;
     }
 
-    vv->not_found = 1;
+    vv->not_found = 1;  //没有解析到相应的值
 
     return vv;
 }
 
-
+/*解析document_uri变量的方法*/
 static ngx_int_t
 ngx_http_variable_request(ngx_http_request_t *r, ngx_http_variable_value_t *v,
     uintptr_t data)
 {
     ngx_str_t  *s;
 
+    /*data表示的是uri成员在ngx_http_request_t结构体中的偏移量*/
     s = (ngx_str_t *) ((char *) r + data);
 
+    /*如果值存在，则返回，否则将not_found置为1，表示没有解析到相应的变量值*/
     if (s->data) {
         v->len = s->len;
         v->valid = 1;
@@ -732,15 +833,20 @@ ngx_http_variable_request_set_size(ngx_http_request_t *r,
     return;
 }
 
-
+/*
+ * 这个用于解析变量值的方法适用的场景是那些在自动解析http请求头部时候已经解析过了的头部
+ * 此时的data表示的是头部对应于ngx_http_request_t的偏移量
+ */
 static ngx_int_t
 ngx_http_variable_header(ngx_http_request_t *r, ngx_http_variable_value_t *v,
     uintptr_t data)
 {
     ngx_table_elt_t  *h;
 
+    /*data是对应解析过的头部在ngx_http_request_t的偏移量，r + data即为头部地址*/
     h = *(ngx_table_elt_t **) ((char *) r + data);
 
+    /*将解析过的头部的值作为变量值输出*/
     if (h) {
         v->len = h->value.len;
         v->valid = 1;
@@ -844,7 +950,7 @@ ngx_http_variable_headers_internal(ngx_http_request_t *r,
     return NGX_OK;
 }
 
-
+/*获取请求头部字段变量的值*/
 static ngx_int_t
 ngx_http_variable_unknown_header_in(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
@@ -855,6 +961,7 @@ ngx_http_variable_unknown_header_in(ngx_http_request_t *r,
 }
 
 
+/*获取响应头部字段变量的值*/
 static ngx_int_t
 ngx_http_variable_unknown_header_out(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
@@ -865,18 +972,22 @@ ngx_http_variable_unknown_header_out(ngx_http_request_t *r,
 }
 
 
+/*
+ * 解析头部中的变量，获取相应的变量值
+ */
 ngx_int_t
 ngx_http_variable_unknown_header(ngx_http_variable_value_t *v, ngx_str_t *var,
     ngx_list_part_t *part, size_t prefix)
 {
     u_char            ch;
     ngx_uint_t        i, n;
-    ngx_table_elt_t  *header;
+    ngx_table_elt_t  *header;   //请求头部和响应头部字段都是键值对，采用ngx_table_elt_t存储
 
     header = part->elts;
 
     for (i = 0; /* void */ ; i++) {
 
+        /*获取链表中的下一个part*/
         if (i >= part->nelts) {
             if (part->next == NULL) {
                 break;
@@ -891,21 +1002,25 @@ ngx_http_variable_unknown_header(ngx_http_variable_value_t *v, ngx_str_t *var,
             continue;
         }
 
+        /*逐个字符比较变量名是否相等*/
+        /*header中存放的是原始变量名，即不包括特殊变量前缀的那部分，prefix即为特殊变量的前缀*/
         for (n = 0; n + prefix < var->len && n < header[i].key.len; n++) {
             ch = header[i].key.data[n];
 
             if (ch >= 'A' && ch <= 'Z') {
-                ch |= 0x20;
+                ch |= 0x20;   //将大写字母转换成小写字母
 
             } else if (ch == '-') {
-                ch = '_';
+                ch = '_';   //将'-'转换为'_'
             }
 
+            /*逐个字符比较变量名是否相等*/
             if (var->data[n + prefix] != ch) {
                 break;
             }
         }
 
+        /*只有同时满足n + prefix == var->len 和 n == header[i].key.len才能保证获取到了正确的变量*/
         if (n + prefix == var->len && n == header[i].key.len) {
             v->len = header[i].value.len;
             v->valid = 1;
@@ -931,6 +1046,7 @@ ngx_http_variable_request_line(ngx_http_request_t *r,
 
     s = r->request_line.data;
 
+    //请求行为空，则需要重新对原始http字符流进行解析，获取请求行数据和长度
     if (s == NULL) {
         s = r->request_start;
 
@@ -939,16 +1055,19 @@ ngx_http_variable_request_line(ngx_http_request_t *r,
             return NGX_OK;
         }
 
+        /*从原始http字符流首地址开始解析，直到首次出现CR或LF表示请求行结束*/
         for (p = s; p < r->header_in->last; p++) {
             if (*p == CR || *p == LF) {
                 break;
             }
         }
 
+        /*获取请求行数据和长度*/
         r->request_line.len = p - s;
         r->request_line.data = s;
     }
 
+    /*将请求行的数据和长度赋值给变量*/
     v->len = r->request_line.len;
     v->valid = 1;
     v->no_cacheable = 0;
@@ -958,7 +1077,7 @@ ngx_http_variable_request_line(ngx_http_request_t *r,
     return NGX_OK;
 }
 
-
+/*获取请求中指定cookie字段的值*/
 static ngx_int_t
 ngx_http_variable_cookie(ngx_http_request_t *r, ngx_http_variable_value_t *v,
     uintptr_t data)
@@ -967,6 +1086,7 @@ ngx_http_variable_cookie(ngx_http_request_t *r, ngx_http_variable_value_t *v,
 
     ngx_str_t  cookie, s;
 
+    /*解析cookie_xxx变量后半部分的长度和字符串*/
     s.len = name->len - (sizeof("cookie_") - 1);
     s.data = name->data + sizeof("cookie_") - 1;
 
@@ -987,6 +1107,7 @@ ngx_http_variable_cookie(ngx_http_request_t *r, ngx_http_variable_value_t *v,
 }
 
 
+/*获取请求中指定url参数的值*/
 static ngx_int_t
 ngx_http_variable_argument(ngx_http_request_t *r, ngx_http_variable_value_t *v,
     uintptr_t data)
@@ -997,14 +1118,17 @@ ngx_http_variable_argument(ngx_http_request_t *r, ngx_http_variable_value_t *v,
     size_t      len;
     ngx_str_t   value;
 
+    /*计算arg_参数后半部分的长度和名字字符串*/
     len = name->len - (sizeof("arg_") - 1);
     arg = name->data + sizeof("arg_") - 1;
 
+    /*从原始的http字符流中解析出arg_参数的后半部分参数的值*/
     if (ngx_http_arg(r, arg, len, &value) != NGX_OK) {
         v->not_found = 1;
         return NGX_OK;
     }
 
+    /*将从原始http字符流中解析得到的值赋值给v，传递到上层函数中*/
     v->data = value.data;
     v->len = value.len;
     v->valid = 1;
@@ -1069,7 +1193,7 @@ ngx_http_variable_tcpinfo(ngx_http_request_t *r, ngx_http_variable_value_t *v,
 
 #endif
 
-
+/*获取请求中content-length字段的值*/
 static ngx_int_t
 ngx_http_variable_content_length(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
@@ -1093,6 +1217,10 @@ ngx_http_variable_content_length(ngx_http_request_t *r,
             return NGX_ERROR;
         }
 
+        /*
+         * 解析完头部行后通过ngx_http_process_request_header来开辟空间从而来存储请求体中的内容，表示请求包体的大小，
+         * 如果为-1表示请求中不带包体
+         */
         v->len = ngx_sprintf(p, "%O", r->headers_in.content_length_n) - p;
         v->data = p;
         v->valid = 1;
@@ -1106,7 +1234,7 @@ ngx_http_variable_content_length(ngx_http_request_t *r,
     return NGX_OK;
 }
 
-
+/*获取请求头部host字段的值*/
 static ngx_int_t
 ngx_http_variable_host(ngx_http_request_t *r, ngx_http_variable_value_t *v,
     uintptr_t data)
@@ -1131,7 +1259,7 @@ ngx_http_variable_host(ngx_http_request_t *r, ngx_http_variable_value_t *v,
     return NGX_OK;
 }
 
-
+/*解析客户端ip地址的的方法*/
 static ngx_int_t
 ngx_http_variable_binary_remote_addr(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
@@ -1171,7 +1299,7 @@ ngx_http_variable_binary_remote_addr(ngx_http_request_t *r,
     return NGX_OK;
 }
 
-
+/*解析客户端字符串形式ip地址的方法*/
 static ngx_int_t
 ngx_http_variable_remote_addr(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
@@ -1185,7 +1313,7 @@ ngx_http_variable_remote_addr(ngx_http_request_t *r,
     return NGX_OK;
 }
 
-
+/*获取客户端端口号的方法*/
 static ngx_int_t
 ngx_http_variable_remote_port(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
@@ -1201,11 +1329,13 @@ ngx_http_variable_remote_port(ngx_http_request_t *r,
     v->no_cacheable = 0;
     v->not_found = 0;
 
+    /*v的内存分配由调用该函数的函数分配，但是data的内存只能由ngx_http_request_t中的内存池分配*/
     v->data = ngx_pnalloc(r->pool, sizeof("65535") - 1);
     if (v->data == NULL) {
         return NGX_ERROR;
     }
 
+    /*ipv4和ipv6*/
     switch (r->connection->sockaddr->sa_family) {
 
 #if (NGX_HAVE_INET6)
@@ -1223,12 +1353,13 @@ ngx_http_variable_remote_port(ngx_http_request_t *r,
 
     default: /* AF_INET */
         sin = (struct sockaddr_in *) r->connection->sockaddr;
-        port = ntohs(sin->sin_port);
+        port = ntohs(sin->sin_port);   //port存放在r->connection->sockaddr中
         break;
     }
 
+    /*端口范围:[0,65536]*/
     if (port > 0 && port < 65536) {
-        v->len = ngx_sprintf(v->data, "%ui", port) - v->data;
+        v->len = ngx_sprintf(v->data, "%ui", port) - v->data;  //len为字符串形式port的位数
     }
 
     return NGX_OK;
@@ -2066,7 +2197,7 @@ ngx_http_variable_request_time(ngx_http_request_t *r,
     return NGX_OK;
 }
 
-
+/*获取连接使用次数*/
 static ngx_int_t
 ngx_http_variable_connection(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
@@ -2087,7 +2218,7 @@ ngx_http_variable_connection(ngx_http_request_t *r,
     return NGX_OK;
 }
 
-
+/*获取处理的请求次数*/
 static ngx_int_t
 ngx_http_variable_connection_requests(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
@@ -2122,7 +2253,7 @@ ngx_http_variable_nginx_version(ngx_http_request_t *r,
     return NGX_OK;
 }
 
-
+/*获取调用gethostname系统调用获取的主机名*/
 static ngx_int_t
 ngx_http_variable_hostname(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
@@ -2136,7 +2267,7 @@ ngx_http_variable_hostname(ngx_http_request_t *r,
     return NGX_OK;
 }
 
-
+/*获取当前进程的pid*/
 static ngx_int_t
 ngx_http_variable_pid(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
@@ -2157,7 +2288,7 @@ ngx_http_variable_pid(ngx_http_request_t *r,
     return NGX_OK;
 }
 
-
+/*获取当前时间*/
 static ngx_int_t
 ngx_http_variable_msec(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
@@ -2165,6 +2296,7 @@ ngx_http_variable_msec(ngx_http_request_t *r,
     u_char      *p;
     ngx_time_t  *tp;
 
+    /*利用请求的内存池为变量值分配内存，保证变量值的生命周期和请求是一致的*/
     p = ngx_pnalloc(r->pool, NGX_TIME_T_LEN + 4);
     if (p == NULL) {
         return NGX_ERROR;
@@ -2181,13 +2313,14 @@ ngx_http_variable_msec(ngx_http_request_t *r,
     return NGX_OK;
 }
 
-
+/*获取iso8601格式的当前时间*/
 static ngx_int_t
 ngx_http_variable_time_iso8601(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
 {
     u_char  *p;
 
+    /*利用请求的内存池为变量值分配内存，保证变量值的生命周期和请求是一致的*/
     p = ngx_pnalloc(r->pool, ngx_cached_http_log_iso8601.len);
     if (p == NULL) {
         return NGX_ERROR;
@@ -2206,17 +2339,24 @@ ngx_http_variable_time_iso8601(ngx_http_request_t *r,
 }
 
 
+/*
+ *     该函数用来获取服务器本地时间。为什么这里变量值不直接使用本地时间的全局变量地址呢?
+ * 我们知道，变量值的生命周期和请求是一致的，但是全局变量并非针对一个请求的，因此为了
+ * 保证变量值和请求的生命周期保持一致，应该用请求的内存池为变量值分配内存
+ */
 static ngx_int_t
 ngx_http_variable_time_local(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
 {
     u_char  *p;
 
+    /*利用请求的内存池为变量值分配内存，保证变量值的生命周期和请求是一致的*/
     p = ngx_pnalloc(r->pool, ngx_cached_http_log_time.len);
     if (p == NULL) {
         return NGX_ERROR;
     }
 
+    /*将全局变量值赋值给变量值*/
     ngx_memcpy(p, ngx_cached_http_log_time.data, ngx_cached_http_log_time.len);
 
     v->len = ngx_cached_http_log_time.len;
@@ -2442,7 +2582,11 @@ ngx_http_regex_exec(ngx_http_request_t *r, ngx_http_regex_t *re, ngx_str_t *s)
 
 #endif
 
-
+/*
+ * ngx_http_variables_add_core_vars函数是ngx_http_core_module的preconfiguration
+ * 回调函数，用于将nginx的核心变量加入到nginx框架中，对于核心变量，均会加入到hash
+ * 表中，方便查找并获取变量值
+ */
 ngx_int_t
 ngx_http_variables_add_core_vars(ngx_conf_t *cf)
 {
@@ -2452,6 +2596,7 @@ ngx_http_variables_add_core_vars(ngx_conf_t *cf)
 
     cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 
+    /*申请用于存放准备hash的变量的数组variables_keys*/
     cmcf->variables_keys = ngx_pcalloc(cf->temp_pool,
                                        sizeof(ngx_hash_keys_arrays_t));
     if (cmcf->variables_keys == NULL) {
@@ -2461,12 +2606,17 @@ ngx_http_variables_add_core_vars(ngx_conf_t *cf)
     cmcf->variables_keys->pool = cf->pool;
     cmcf->variables_keys->temp_pool = cf->pool;
 
+    /*初始化数组variables_keys*/
     if (ngx_hash_keys_array_init(cmcf->variables_keys, NGX_HASH_SMALL)
         != NGX_OK)
     {
         return NGX_ERROR;
     }
 
+    /*
+     * ngx_http_core_variables数组存放的是nginx的核心变量，这个for循环要做的就是将
+     * 所有的核心变量加入到用于存放待hash的变量的数组variables_keys中，用于做hash
+     */
     for (cv = ngx_http_core_variables; cv->name.len; cv++) {
         v = ngx_palloc(cf->pool, sizeof(ngx_http_variable_t));
         if (v == NULL) {
@@ -2475,6 +2625,7 @@ ngx_http_variables_add_core_vars(ngx_conf_t *cf)
 
         *v = *cv;
 
+        /*在这里以变量的名字作为hash的键值，变量本身作为value进行hash*/
         rc = ngx_hash_add_key(cmcf->variables_keys, &v->name, v,
                               NGX_HASH_READONLY_KEY);
 
@@ -2493,7 +2644,57 @@ ngx_http_variables_add_core_vars(ngx_conf_t *cf)
     return NGX_OK;
 }
 
+/*
+ *     在进行解析配置项之前，Nginx会统计其支持的所有内部变量，即在每个模块的回调函数module->preconfiguration内，
+ * 将模块自身支持的内部变量统一加入到http核心配置ngx_http_core_main_conf_t的variables_keys字段中，除了核心模块
+ * ngx_http_core_module之外，其他模块也会直接或者间接把自身支持的内部变量加入到cmcf->variables_keys中。
+ * 另外，用户自定义的外部变量在配置文件的解析过程中也会被添加到cmcf->variables_keys中，所以当Nginx解析配置正常结束时，
+ * 所有的变量都被集中在cmcf->variables_keys中。
+ *     Nginx在解析配置文件过程中遇到的所有变量都会加入到cmcf->variables中。有些变量虽然没有出现在配置文件中，但是以
+ * Nginx默认设置的形式出现在源代码里，他们也会被加入到cmcf->variables中。如ngx_http_log_module模块内定义的ngx_http_combined_fmt
+ * 全局静态变量就出现了一些Nginx变量:
+ * static ngx_str_t ngx_http_combined_fmt = 
+ *      ngx_string("$remote_addr - $remote_user [$time_local] "
+ *                    "\"$request\" $status $body_bytes_sent "
+ *                    "\"$http_referer\" \"$http_user_agent\"");
+ *     虽然Nginx默认提供的变量有很多，但只需要把我们在配置文件中真正用到的变量挑出来，当配置文件解析完毕后，所有用到的
+ * 变量也就被集中起来了(在cmcf->variables)，所有这些被用到的变量都需要检查其合法性，逻辑为在ngx_http_variables_init_vars
+ * 内，其遍历cmcf->variables中收集的所有已经使用到的变量，逐个去已定义变量cmcf->variables_keys集合里面查找，如果找到，
+ * 则表明用户使用无误，如果没有找到，则需要注意，这还只能说明它可能一个非法变量，因为5类特殊变量(以 "http_"、"sent_http"、
+ * "upstream_http_"、"cookie_"、"arg_")会依据请求不同而不可预知，不可能提前定义并收集到cmcf->variables_keys中。因此需要
+ * 判断用户在配置文件中使用的变量是否在这五类变量里，具体来说就是检测用户使用的变量名的前面几个字符是否与他们一致。如:
+ * 对于"http://192.168.164.2/?pageid=2",会自动生成$arg_pageid变量。如果用户在配置文件里面使用了$arg_pageid，但是客户端
+ * 请求并没有带上pageid参数，此时$arg_pageid值为空，仍是合法变量。
+ *
+ *     cmcf->variables数组存放了用户所有用到的变量，但是要清楚cmcf->variables中存放的只是可能被用到的变量，因为在实际处理
+ * 客户端请求的过程中，根据请求的不同执行的具体路径也不相同，所以每个请求实际用到的变量也不一定相同，因此存放变量值的地方
+ * 应该在和请求挂钩的一个上下文中，即为r->variables，该数组存放的就是变量值。这个数组和cmcf->variables是一一对应的。
+ * 形成var_name和var_value对，所以两个数组里面的同一个下标位置的元素刚好就是互相对应的变量名和变量值。所以我们在使用
+ * 某个变量的时候，会先通过ngx_http_get_variable_index()获得它在变量名数组中的下标index，然后去r->variables中获取变量值。
+ * 如果某个变量对于某个请求来说是没有使用的，那么r->variables中对应的该变量值为空。
+ *     子请求直接复用父请求的r-variables数组。
+ *     变量名全局只会保存一份，即cmcf->variables数组中，变量值每个请求都会有一份，保存在r->variables中。
+ */
 
+/*
+ * 变量从定义到使用的流程:
+ * 1.定义变量，在模块的module->preconfiguration回调函数中，设置添加变量，会调用ngx_http_add_variable()，并且设置data
+ * 和get_handler成员，在ngx_http_add_variable()这个函数中，会设置变量的name和flag属性，并将变量收集到cmcf->variables_keys中。
+ * 各模块的配置项解析方法中，可能索引化变量: ngx_http_get_variable_index。此时设置的cmcf->variables数组中的index成员
+ * 和name成员。
+ * 2.初始化变量，在ngx_http_variables_init_vars()中，对于配置文件中已经使用的变量，检查器合法性，如果合法，则将cmcf->variables_keys
+ * 中保存的对应变量的get_handler、data、flags参数保存到cmcf->variables的对应字段中。将需要散列的变量构造出静态散列表。
+ * 3.使用变量。同一个变量既可以被hash也可以被索引。
+ *   1) ngx_http_get_indexed_variable()
+ *   2) ngx_http_get_flushed_variable()
+ *   3) ngx_http_get_variable()
+ */
+
+/*
+ * ***********************************初始化使用到的变量*****************************************
+ * 对于合法使用的变量，在ngx_http_variables_init_vars中会设置其三个字段:get_handler、data、flags。这三个字段值从何而来
+ * 呢?当然是从cmcf->variables_keys中保存的对应变量的对应字段中来。
+ */
 ngx_int_t
 ngx_http_variables_init_vars(ngx_conf_t *cf)
 {
@@ -2505,11 +2706,14 @@ ngx_http_variables_init_vars(ngx_conf_t *cf)
 
     /* set the handlers for the indexed http variables */
 
+    /*获取全局唯一的ngx_http_core_main_conf_t结构体*/
     cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 
+    /*cmcf->variables保存的是所有已使用的变量*/
     v = cmcf->variables.elts;
     key = cmcf->variables_keys->keys.elts;
 
+    /*遍历cmcf->variables，检查合法性，并对合法性变量设置相应字段*/
     for (i = 0; i < cmcf->variables.nelts; i++) {
 
         for (n = 0; n < cmcf->variables_keys->keys.nelts; n++) {
@@ -2526,13 +2730,13 @@ ngx_http_variables_init_vars(ngx_conf_t *cf)
                 av->flags |= NGX_HTTP_VAR_INDEXED;
                 v[i].flags = av->flags;
 
-                av->index = i;
+                av->index = i;   //设置cmcf->variables_keys中用到变量的索引
 
                 if (av->get_handler == NULL) {
                     break;
                 }
 
-                goto next;
+                goto next;  //遍历cmcf->variables中下一个已使用的变量
             }
         }
 
@@ -2540,7 +2744,7 @@ ngx_http_variables_init_vars(ngx_conf_t *cf)
             && ngx_strncmp(v[i].name.data, "http_", 5) == 0)
         {
             v[i].get_handler = ngx_http_variable_unknown_header_in;
-            v[i].data = (uintptr_t) &v[i].name;
+            v[i].data = (uintptr_t) &v[i].name;  //传递给get_handler函数的data是变量的名字
 
             continue;
         }
@@ -2549,7 +2753,7 @@ ngx_http_variables_init_vars(ngx_conf_t *cf)
             && ngx_strncmp(v[i].name.data, "sent_http_", 10) == 0)
         {
             v[i].get_handler = ngx_http_variable_unknown_header_out;
-            v[i].data = (uintptr_t) &v[i].name;
+            v[i].data = (uintptr_t) &v[i].name;  //传递给get_handler函数的data是变量的名字
 
             continue;
         }
@@ -2558,8 +2762,8 @@ ngx_http_variables_init_vars(ngx_conf_t *cf)
             && ngx_strncmp(v[i].name.data, "upstream_http_", 14) == 0)
         {
             v[i].get_handler = ngx_http_upstream_header_variable;
-            v[i].data = (uintptr_t) &v[i].name;
-            v[i].flags = NGX_HTTP_VAR_NOCACHEABLE;
+            v[i].data = (uintptr_t) &v[i].name;  //传递给get_handler函数的data是变量的名字
+            v[i].flags = NGX_HTTP_VAR_NOCACHEABLE;  //设置flags
 
             continue;
         }
@@ -2606,12 +2810,13 @@ ngx_http_variables_init_vars(ngx_conf_t *cf)
     for (n = 0; n < cmcf->variables_keys->keys.nelts; n++) {
         av = key[n].value;
 
+        //将不需要散列的变量的散列键设置为NULL，防止被散列
         if (av->flags & NGX_HTTP_VAR_NOHASH) {
             key[n].key.data = NULL;
         }
     }
 
-
+    /*将需要三别的变量构造出散列表*/
     hash.hash = &cmcf->variables_hash;
     hash.key = ngx_hash_key;
     hash.max_size = cmcf->variables_hash_max_size;
@@ -2627,6 +2832,7 @@ ngx_http_variables_init_vars(ngx_conf_t *cf)
         return NGX_ERROR;
     }
 
+    //初始化完成之后，cmcf->variables_keys变量已经没有用途了
     cmcf->variables_keys = NULL;
 
     return NGX_OK;
