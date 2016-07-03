@@ -711,7 +711,7 @@ ngx_http_script_add_code(ngx_array_t *codes, size_t size, void *code)
 /*
  * 变量值中的变量字符串用ngx_http_script_add_var_code进行编译处理，
  * 普通字符串用ngx_http_script_add_copy_code进行编译处理
- * ngx_http_script_add_copy_code - 处理参数中的固定字符串。这些字符串要和变量的值拼接出最终参数值。
+ * ngx_http_script_add_copy_code - 处理参数中的固定字符串。这些字符串要和变量的值拼接(会按照顺序存放在e->buf中)出最终参数值。
  */
 static ngx_int_t
 ngx_http_script_add_copy_code(ngx_http_script_compile_t *sc, ngx_str_t *value,
@@ -752,7 +752,7 @@ ngx_http_script_add_copy_code(ngx_http_script_compile_t *sc, ngx_str_t *value,
     code->code = ngx_http_script_copy_code;
     code->len = len;
 
-    /* 将固定字符串暂存入 values 中 */
+    /* 将固定字符串暂存入 values(即为lcf->codes数组) 中 */
     p = ngx_cpymem((u_char *) code + sizeof(ngx_http_script_copy_code_t),
                    value->data, value->len);  //把value数据拷贝到ngx_http_script_copy_code_t后面
 
@@ -1793,10 +1793,10 @@ ngx_http_script_var_set_handler_code(ngx_http_script_engine_t *e)
     /*移动ip，使之指向下一个待执行的脚本指令结构体*/
     e->ip += sizeof(ngx_http_script_var_handler_code_t);
 
-    /*获取当前变量对应的栈桢*/
+    /*获取当前变量对应的值栈桢(存储的是配置文件中的获取到的值)*/
     e->sp--;
 
-    /*将请求、变量值传递给set_handler方法设置变量值*/
+    /*将请求、变量值传递给set_handler方法设置变量值，*/
     code->handler(e->request, e->sp, code->data);
 }
 

@@ -39,6 +39,53 @@
   * 这个对象进行的。
   */
 
+/*
+ *     在进行解析配置项之前，Nginx会统计其支持的所有内部变量，即在每个模块的回调函数module->preconfiguration内，
+ * 将模块自身支持的内部变量统一加入到http核心配置ngx_http_core_main_conf_t的variables_keys字段中，除了核心模块
+ * ngx_http_core_module之外，其他模块也会直接或者间接把自身支持的内部变量加入到cmcf->variables_keys中。
+ * 另外，用户自定义的外部变量在配置文件的解析过程中也会被添加到cmcf->variables_keys中，所以当Nginx解析配置正常结束时，
+ * 所有的变量都被集中在cmcf->variables_keys中。
+ *     Nginx在解析配置文件过程中遇到的所有变量都会加入到cmcf->variables中。有些变量虽然没有出现在配置文件中，但是以
+ * Nginx默认设置的形式出现在源代码里，他们也会被加入到cmcf->variables中。如ngx_http_log_module模块内定义的ngx_http_combined_fmt
+ * 全局静态变量就出现了一些Nginx变量:
+ * static ngx_str_t ngx_http_combined_fmt = 
+ *      ngx_string("$remote_addr - $remote_user [$time_local] "
+ *                    "\"$request\" $status $body_bytes_sent "
+ *                    "\"$http_referer\" \"$http_user_agent\"");
+ *     虽然Nginx默认提供的变量有很多，但只需要把我们在配置文件中真正用到的变量挑出来，当配置文件解析完毕后，所有用到的
+ * 变量也就被集中起来了(在cmcf->variables)，所有这些被用到的变量都需要检查其合法性，逻辑为在ngx_http_variables_init_vars
+ * 内，其遍历cmcf->variables中收集的所有已经使用到的变量，逐个去已定义变量cmcf->variables_keys集合里面查找，如果找到，
+ * 则表明用户使用无误，如果没有找到，则需要注意，这还只能说明它可能一个非法变量，因为5类特殊变量(以 "http_"、"sent_http"、
+ * "upstream_http_"、"cookie_"、"arg_")会依据请求不同而不可预知，不可能提前定义并收集到cmcf->variables_keys中。因此需要
+ * 判断用户在配置文件中使用的变量是否在这五类变量里，具体来说就是检测用户使用的变量名的前面几个字符是否与他们一致。如:
+ * 对于"http://192.168.164.2/?pageid=2",会自动生成$arg_pageid变量。如果用户在配置文件里面使用了$arg_pageid，但是客户端
+ * 请求并没有带上pageid参数，此时$arg_pageid值为空，仍是合法变量。
+ *
+ *     cmcf->variables数组存放了用户所有用到的变量，但是要清楚cmcf->variables中存放的只是可能被用到的变量，因为在实际处理
+ * 客户端请求的过程中，根据请求的不同执行的具体路径也不相同，所以每个请求实际用到的变量也不一定相同，因此存放变量值的地方
+ * 应该在和请求挂钩的一个上下文中，即为r->variables，该数组存放的就是变量值。这个数组和cmcf->variables是一一对应的。
+ * 形成var_name和var_value对，所以两个数组里面的同一个下标位置的元素刚好就是互相对应的变量名和变量值。所以我们在使用
+ * 某个变量的时候，会先通过ngx_http_get_variable_index()获得它在变量名数组中的下标index，然后去r->variables中获取变量值。
+ * 如果某个变量对于某个请求来说是没有使用的，那么r->variables中对应的该变量值为空。
+ *     子请求直接复用父请求的r-variables数组。
+ *     变量名全局只会保存一份，即cmcf->variables数组中，变量值每个请求都会有一份，保存在r->variables中。
+ */
+
+/*
+ * 变量从定义到使用的流程:
+ * 1.定义变量，在模块的module->preconfiguration回调函数中，设置添加变量，会调用ngx_http_add_variable()，并且设置data
+ * 和get_handler成员，在ngx_http_add_variable()这个函数中，会设置变量的name和flag属性，并将变量收集到cmcf->variables_keys中。
+ * 各模块的配置项解析方法中，可能索引化变量: ngx_http_get_variable_index。此时设置的cmcf->variables数组中的index成员
+ * 和name成员。
+ * 2.初始化变量，在ngx_http_variables_init_vars()中，对于配置文件中已经使用的变量，检查器合法性，如果合法，则将cmcf->variables_keys
+ * 中保存的对应变量的get_handler、data、flags参数保存到cmcf->variables的对应字段中。将需要散列的变量构造出静态散列表。
+ * 3.使用变量。同一个变量既可以被hash也可以被索引。
+ *   1) ngx_http_get_indexed_variable()
+ *   2) ngx_http_get_flushed_variable()
+ *   3) ngx_http_get_variable()
+ */
+
+
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
@@ -419,7 +466,7 @@ ngx_http_add_variable(ngx_conf_t *cf, ngx_str_t *name, ngx_uint_t flags)
 
     key = cmcf->variables_keys->keys.elts;
     /*
-     * 下面这个循环用于判断需要添加的变量是否已经存在hash表中了，如果存在，则判断变量是否是值可变的，
+     * 下面这个循环用于判断需要添加的变量是否已经存在variables_keys中了，如果存在，则判断变量是否是值可变的，
      * 如果是，返回变量
      */
     for (i = 0; i < cmcf->variables_keys->keys.nelts; i++) {
@@ -462,7 +509,7 @@ ngx_http_add_variable(ngx_conf_t *cf, ngx_str_t *name, ngx_uint_t flags)
     v->flags = flags;  //设置flags
     v->index = 0;
 
-    /*将变量添加到hash表中*/
+    /*将变量添加到variables_keys中*/
     rc = ngx_hash_add_key(cmcf->variables_keys, &v->name, v, 0);
 
     if (rc == NGX_ERROR) {
@@ -2720,6 +2767,10 @@ ngx_http_variables_init_vars(ngx_conf_t *cf)
 
             av = key[n].value;
 
+            /*
+             * 对于合法的变量，会将cmcf->variables_keys中该变量对应的属性和方法拷贝
+             * 到cmcf->variables中该变量对应的属性和方法中
+             */
             if (v[i].name.len == key[n].key.len
                 && ngx_strncmp(v[i].name.data, key[n].key.data, v[i].name.len)
                    == 0)

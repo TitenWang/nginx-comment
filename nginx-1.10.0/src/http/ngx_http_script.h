@@ -25,10 +25,10 @@
  */
 typedef struct {
     u_char                     *ip;  //指向待执行的脚本指令。
-    u_char                     *pos;
+    u_char                     *pos; //指向下面的buf，即最后变量的值存放的地方
     ngx_http_variable_value_t  *sp;  //变量值构成的栈
 
-    ngx_str_t                   buf;
+    ngx_str_t                   buf;  //解析一个复杂值参数的变量时，该复杂值参数最后解析的结果就存放在buf中
     ngx_str_t                   line;
 
     /* the start of the rewritten arguments */
@@ -51,7 +51,7 @@ typedef struct {
 
     ngx_array_t               **flushes;  //存放的是变量对应的index索引号
     ngx_array_t               **lengths;  //存放用于获取变量对应值长度的脚本，每个元素为1个字节
-    ngx_array_t               **values;  //指向lcf->codes数组，存放用于获取变量值的脚本，每个元素为1个字节
+    ngx_array_t               **values;   //指向lcf->codes数组，存放用于获取变量值的脚本，每个元素为1个字节
 
     ngx_uint_t                  variables;  //表示set第二个值参数中有多少个变量
     ngx_uint_t                  ncaptures;

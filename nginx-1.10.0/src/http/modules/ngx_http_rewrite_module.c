@@ -957,6 +957,7 @@ ngx_http_rewrite_set(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     value[1].data++;
 
     /*将该变量加入到cmcf->variables_keys中，并设置name和flags属性*/
+    /*外部变量可以重复赋值，因此其必须是值可变的，即NGX_HTTP_VAR_CHANGEABLE*/
     v = ngx_http_add_variable(cf, &value[1], NGX_HTTP_VAR_CHANGEABLE);
     if (v == NULL) {
         return NGX_CONF_ERROR;
