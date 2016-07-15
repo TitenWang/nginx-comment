@@ -25,7 +25,7 @@
  */
 
 
-static ngx_str_t  *ngx_sys_errlist;
+static ngx_str_t  *ngx_sys_errlist; //系统错误码对应的描述字符串都存放在这个链表里面
 static ngx_str_t   ngx_unknown_error = ngx_string("Unknown error");
 
 
@@ -41,7 +41,10 @@ ngx_strerror(ngx_err_t err, u_char *errstr, size_t size)
     return ngx_cpymem(errstr, msg->data, size);
 }
 
-
+/*
+ * 初始化系统每个错误码对应的描述字符串，易于问题发生时进行定位。
+ * 最终的错误码对应的描述字符串都存放在ngx_sys_errlist链表中。
+ */
 ngx_int_t
 ngx_strerror_init(void)
 {
@@ -55,13 +58,20 @@ ngx_strerror_init(void)
      * malloc() is used and possible errors are logged using strerror().
      */
 
+    /*
+     * NGX_SYS_NERR为系统错误码个数，NGX_SYS_NERR不是直接定义在源代码里面的，而是在编译的时候根据操作系统的不同
+     * 而生成的，不同的操作系统这个值不一定相同
+     */
     len = NGX_SYS_NERR * sizeof(ngx_str_t);
 
-    ngx_sys_errlist = malloc(len);
+    ngx_sys_errlist = malloc(len); //系统错误码对应的描述字符串都存放在这个链表里面
     if (ngx_sys_errlist == NULL) {
         goto failed;
     }
 
+    /*
+     * strerror() 通过标准错误的标号，获得错误的描述字符串 ，将单纯的错误标号转为字符串描述，方便用户查找错误。
+     */
     for (err = 0; err < NGX_SYS_NERR; err++) {
         msg = strerror(err);
         len = ngx_strlen(msg);

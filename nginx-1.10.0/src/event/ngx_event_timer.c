@@ -101,7 +101,7 @@ ngx_event_expire_timers(void)
     }
 }
 
-
+/*删除定时器事件，但会执行相应的回调*/
 void
 ngx_event_cancel_timers(void)
 {
@@ -121,6 +121,7 @@ ngx_event_cancel_timers(void)
 
         ev = (ngx_event_t *) ((char *) node - offsetof(ngx_event_t, timer));
 
+        /*如果事件不能取消，直接返回*/
         if (!ev->cancelable) {
             return;
         }
@@ -129,6 +130,7 @@ ngx_event_cancel_timers(void)
                        "event timer cancel: %d: %M",
                        ngx_event_ident(ev->data), ev->timer.key);
 
+        /*从定时器红黑树中删除这个事件*/
         ngx_rbtree_delete(&ngx_event_timer_rbtree, &ev->timer);
 
 #if (NGX_DEBUG)
@@ -137,8 +139,10 @@ ngx_event_cancel_timers(void)
         ev->timer.parent = NULL;
 #endif
 
+        /*将标志位清零*/
         ev->timer_set = 0;
 
+        /*调用事件处理函数*/
         ev->handler(ev);
     }
 }

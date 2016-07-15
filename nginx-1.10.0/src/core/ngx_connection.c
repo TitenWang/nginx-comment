@@ -126,7 +126,9 @@ ngx_clone_listening(ngx_conf_t *cf, ngx_listening_t *ls)
     return NGX_OK;
 }
 
-
+/*
+ * 根据从旧版本Nginx中继承来的socket句柄，初始化socket对应的ngx_listening_t结构体的成员
+ */
 ngx_int_t
 ngx_set_inherited_sockets(ngx_cycle_t *cycle)
 {
@@ -150,12 +152,14 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
     ls = cycle->listening.elts;
     for (i = 0; i < cycle->listening.nelts; i++) {
 
+        /*申请存放socket信息的内存*/
         ls[i].sockaddr = ngx_palloc(cycle->pool, NGX_SOCKADDRLEN);
         if (ls[i].sockaddr == NULL) {
             return NGX_ERROR;
         }
 
         ls[i].socklen = NGX_SOCKADDRLEN;
+        /*获取socket的名称，用于判断是否有效*/
         if (getsockname(ls[i].fd, ls[i].sockaddr, &ls[i].socklen) == -1) {
             ngx_log_error(NGX_LOG_CRIT, cycle->log, ngx_socket_errno,
                           "getsockname() of the inherited "
@@ -164,12 +168,13 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
             continue;
         }
 
+        /*获取socket地址族类型，根据类型设置存储纯字符串形式的ip地址的所需长度*/
         switch (ls[i].sockaddr->sa_family) {
 
 #if (NGX_HAVE_INET6)
         case AF_INET6:
             ls[i].addr_text_max_len = NGX_INET6_ADDRSTRLEN;
-            len = NGX_INET6_ADDRSTRLEN + sizeof("[]:65535") - 1;
+            len = NGX_INET6_ADDRSTRLEN + sizeof("[]:65535") - 1;  //ip:port形式
             break;
 #endif
 
@@ -182,7 +187,7 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
 
         case AF_INET:
             ls[i].addr_text_max_len = NGX_INET_ADDRSTRLEN;
-            len = NGX_INET_ADDRSTRLEN + sizeof(":65535") - 1;
+            len = NGX_INET_ADDRSTRLEN + sizeof(":65535") - 1;  //ip:port形式
             break;
 
         default:
@@ -193,11 +198,13 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
             continue;
         }
 
+        /*根据得到的长度申请内存*/
         ls[i].addr_text.data = ngx_pnalloc(cycle->pool, len);
         if (ls[i].addr_text.data == NULL) {
             return NGX_ERROR;
         }
 
+        /*将socket绑定的地址转换为文本格式(ipv4和ipv6的不相同)*/
         len = ngx_sock_ntop(ls[i].sockaddr, ls[i].socklen,
                             ls[i].addr_text.data, len, 1);
         if (len == 0) {
@@ -207,6 +214,11 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
         ls[i].addr_text.len = len;
 
         ls[i].backlog = NGX_LISTEN_BACKLOG;
+
+        /*
+         * 下面的处理流程是获取该socket句柄对应的一个选项的值，并根据结果设置ngx_listening_t结构体中的
+         * 对应于该选项的值的标志位。
+         */
 
         olen = sizeof(int);
 
@@ -375,7 +387,7 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
     return NGX_OK;
 }
 
-
+/*创建套接字，绑定并监听地址和端口*/
 ngx_int_t
 ngx_open_listening_sockets(ngx_cycle_t *cycle)
 {
@@ -432,6 +444,7 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
             }
 #endif
 
+            /*fd不为-1表示已经打开过了*/
             if (ls[i].fd != (ngx_socket_t) -1) {
                 continue;
             }
@@ -445,6 +458,7 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
                 continue;
             }
 
+            /*创建socket句柄*/
             s = ngx_socket(ls[i].sockaddr->sa_family, ls[i].type, 0);
 
             if (s == (ngx_socket_t) -1) {
@@ -453,6 +467,7 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
                 return NGX_ERROR;
             }
 
+            /*设置reuse属性*/
             if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR,
                            (const void *) &reuseaddr, sizeof(int))
                 == -1)
@@ -534,6 +549,7 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
             ngx_log_debug2(NGX_LOG_DEBUG_CORE, log, 0,
                            "bind() %V #%d ", &ls[i].addr_text, s);
 
+            /*绑定监听的地址和端口*/
             if (bind(s, ls[i].sockaddr, ls[i].socklen) == -1) {
                 err = ngx_socket_errno;
 
@@ -582,11 +598,13 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
             }
 #endif
 
+            /*如果不是tcp套接字，不监听直接返回*/
             if (ls[i].type != SOCK_STREAM) {
                 ls[i].fd = s;
                 continue;
             }
 
+            /*监听该socket句柄*/
             if (listen(s, ls[i].backlog) == -1) {
                 err = ngx_socket_errno;
 
@@ -619,6 +637,7 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
                 continue;
             }
 
+            /*为1表示当前套接字已经监听*/
             ls[i].listen = 1;
 
             ls[i].fd = s;
@@ -644,7 +663,7 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
     return NGX_OK;
 }
 
-
+/*设置套接字属性，如rcvbuf、sndbuf*/
 void
 ngx_configure_listening_sockets(ngx_cycle_t *cycle)
 {
@@ -1250,7 +1269,7 @@ ngx_drain_connections(void)
     }
 }
 
-
+/*关闭空闲连接，并处理读事件*/
 void
 ngx_close_idle_connections(ngx_cycle_t *cycle)
 {
@@ -1264,8 +1283,8 @@ ngx_close_idle_connections(ngx_cycle_t *cycle)
         /* THREAD: lock */
 
         if (c[i].fd != (ngx_socket_t) -1 && c[i].idle) {
-            c[i].close = 1;
-            c[i].read->handler(c[i].read);
+            c[i].close = 1;  //将close标志位置1，表示关闭
+            c[i].read->handler(c[i].read);  //调用读事件处理函数
         }
     }
 }

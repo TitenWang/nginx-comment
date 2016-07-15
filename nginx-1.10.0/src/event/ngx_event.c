@@ -189,7 +189,7 @@ ngx_module_t  ngx_event_core_module = {
     NGX_MODULE_V1_PADDING
 };
 
-
+/*事件收集和分发函数入口，注解事件模块时补充*/
 void
 ngx_process_events_and_timers(ngx_cycle_t *cycle)
 {

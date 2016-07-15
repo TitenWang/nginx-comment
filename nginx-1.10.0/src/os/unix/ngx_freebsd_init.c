@@ -24,7 +24,7 @@ int     ngx_freebsd_machdep_hlt_logical_cpus;
 ngx_uint_t  ngx_freebsd_sendfile_nbytes_bug;
 ngx_uint_t  ngx_freebsd_use_tcp_nopush;
 
-ngx_uint_t  ngx_debug_malloc;
+ngx_uint_t  ngx_debug_malloc;  //configure的时候加上NGX_DEBUG_MALLOC并设置了MALLOC_OPTIONS为J才会置1
 
 
 static ngx_os_io_t ngx_freebsd_io = {

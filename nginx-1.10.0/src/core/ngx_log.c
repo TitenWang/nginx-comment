@@ -313,7 +313,9 @@ ngx_log_errno(u_char *buf, u_char *last, ngx_err_t err)
     return buf;
 }
 
-
+/*
+ * 初始化错误日志对象及全局前缀
+ */
 ngx_log_t *
 ngx_log_init(u_char *prefix)
 {
@@ -323,7 +325,7 @@ ngx_log_init(u_char *prefix)
     ngx_log.file = &ngx_log_file;
     ngx_log.log_level = NGX_LOG_NOTICE;
 
-    name = (u_char *) NGX_ERROR_LOG_PATH;
+    name = (u_char *) NGX_ERROR_LOG_PATH;  //NGX_ERROR_LOG_PATH为logs/error.log
 
     /*
      * we use ngx_strlen() here since BCC warns about
@@ -332,6 +334,7 @@ ngx_log_init(u_char *prefix)
 
     nlen = ngx_strlen(name);
 
+    /*NGX_ERROR_LOG_PATH表明错误日志文件没有定义，此时直接打屏*/
     if (nlen == 0) {
         ngx_log_file.fd = ngx_stderr;
         return &ngx_log;
@@ -342,6 +345,7 @@ ngx_log_init(u_char *prefix)
 #if (NGX_WIN32)
     if (name[1] != ':') {
 #else
+    /*默认情况下，NGX_ERROR_LOG_PATH为"logs/err.log",不带有'/',需要添加前缀;否则为为绝对路径，不需要添加前缀*/
     if (name[0] != '/') {
 #endif
 
@@ -350,7 +354,7 @@ ngx_log_init(u_char *prefix)
 
         } else {
 #ifdef NGX_PREFIX
-            prefix = (u_char *) NGX_PREFIX;
+            prefix = (u_char *) NGX_PREFIX;  //NGX_PREFIX为安装时可用--prefix指定，否则默认为"/usr/local/nginx"
             plen = ngx_strlen(prefix);
 #else
             plen = 0;
@@ -358,27 +362,29 @@ ngx_log_init(u_char *prefix)
         }
 
         if (plen) {
-            name = malloc(plen + nlen + 2);
+            name = malloc(plen + nlen + 2);  //plen + nlen + 2为前缀和错误日志路径长度
             if (name == NULL) {
                 return NULL;
             }
 
-            p = ngx_cpymem(name, prefix, plen);
+            p = ngx_cpymem(name, prefix, plen);  //先拷贝前缀至name
 
             if (!ngx_path_separator(*(p - 1))) {
-                *p++ = '/';
+                *p++ = '/';  //前缀和错误日志相对路径间添加目录分隔符'/'
             }
 
-            ngx_cpystrn(p, (u_char *) NGX_ERROR_LOG_PATH, nlen + 1);
+            ngx_cpystrn(p, (u_char *) NGX_ERROR_LOG_PATH, nlen + 1);  //再拷贝错误日志路径
 
             p = name;
         }
     }
 
+    /*打开错误日志,如/usr/local/nginx/logs/err.log*/
     ngx_log_file.fd = ngx_open_file(name, NGX_FILE_APPEND,
                                     NGX_FILE_CREATE_OR_OPEN,
                                     NGX_FILE_DEFAULT_ACCESS);
 
+    /*打开文件失败，则改为打屏*/
     if (ngx_log_file.fd == NGX_INVALID_FILE) {
         ngx_log_stderr(ngx_errno,
                        "[alert] could not open error log file: "
@@ -396,23 +402,32 @@ ngx_log_init(u_char *prefix)
         ngx_free(p);
     }
 
-    return &ngx_log;
+    return &ngx_log;  //返回错误日志对象
 }
 
-
+/*
+ * 如果配置文件中没有error_log配置项，在配置文件解析完后调用errlog模块的ngx_log_open_default函数将日志等级默认
+ * 置为NGX_LOG_ERR，日志文件设置为NGX_ERROR_LOG_PATH（该宏是在configure时指定的）。
+ */
 ngx_int_t
 ngx_log_open_default(ngx_cycle_t *cycle)
 {
     ngx_log_t         *log;
     static ngx_str_t   error_log = ngx_string(NGX_ERROR_LOG_PATH);
 
+    /* 配置文件中不存在生效的error_log配置项时new_log.file就为空 */  
     if (ngx_log_get_file_log(&cycle->new_log) != NULL) {
         return NGX_OK;
     }
 
+    /*
+     * #define NGX_LOG_STDERR            0
+     * log_level不为0，表示需要日志文件，因为不是打印在标准错误输出
+     */
     if (cycle->new_log.log_level != 0) {
         /* there are some error logs, but no files */
 
+        /*创建日志对象*/
         log = ngx_pcalloc(cycle->pool, sizeof(ngx_log_t));
         if (log == NULL) {
             return NGX_ERROR;
@@ -423,13 +438,16 @@ ngx_log_open_default(ngx_cycle_t *cycle)
         log = &cycle->new_log;
     }
 
+    /*日志级别设置为NGX_LOG_ERR*/
     log->log_level = NGX_LOG_ERR;
 
+    /*打开日志文件*/
     log->file = ngx_conf_open_file(cycle, &error_log);
     if (log->file == NULL) {
         return NGX_ERROR;
     }
 
+    /*将log节点插入到log链表中*/
     if (log != &cycle->new_log) {
         ngx_log_insert(&cycle->new_log, log);
     }
@@ -437,7 +455,7 @@ ngx_log_open_default(ngx_cycle_t *cycle)
     return NGX_OK;
 }
 
-
+/*重定向到标准错误输出*/
 ngx_int_t
 ngx_log_redirect_stderr(ngx_cycle_t *cycle)
 {

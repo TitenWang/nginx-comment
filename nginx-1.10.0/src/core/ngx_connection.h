@@ -16,16 +16,18 @@
 typedef struct ngx_listening_s  ngx_listening_t;
 
 struct ngx_listening_s {
-    ngx_socket_t        fd;
+    ngx_socket_t        fd;  //socket套接字句柄
 
-    struct sockaddr    *sockaddr;
+    struct sockaddr    *sockaddr;  //监听的sockaddr地址
     socklen_t           socklen;    /* size of sockaddr */
-    size_t              addr_text_max_len;
-    ngx_str_t           addr_text;
+    size_t              addr_text_max_len;  //字符串形式的ip地址的最大长度，指定了addr_text的内存大小
+    ngx_str_t           addr_text;  //存储字符串形式的ip地址
 
-    int                 type;
+    int                 type;  //套接字类型，如SOCK_STREAM表示tcp
 
+    /*tcp实现监听时的backlog队列，它表示允许正在通过三次握手建立tcp连接但还没有任何进程开始处理的连接最大个数*/
     int                 backlog;
+    /*内核中对于这个套接自的接受缓冲区的大小 发送缓冲区的大小*/
     int                 rcvbuf;
     int                 sndbuf;
 #if (NGX_HAVE_KEEPALIVE_TUNABLE)
@@ -35,34 +37,48 @@ struct ngx_listening_s {
 #endif
 
     /* handler of accepted connection */
-    ngx_connection_handler_pt   handler;
+    ngx_connection_handler_pt   handler;  //新的tcp连接成功建立了后的处理方法
 
+    /*用于保存当前监听端口对应着的所有主机名*/
     void               *servers;  /* array of ngx_http_in_addr_t, for example */
 
+    /*日志对象*/
     ngx_log_t           log;
     ngx_log_t          *logp;
 
-    size_t              pool_size;
+    size_t              pool_size;  //新的tcp连接的内存池大小
     /* should be here because of the AcceptEx() preread */
     size_t              post_accept_buffer_size;
     /* should be here because of the deferred accept */
     ngx_msec_t          post_accept_timeout;
 
-    ngx_listening_t    *previous;
-    ngx_connection_t   *connection;
+    ngx_listening_t    *previous;  //前一个ngx_listening_t，多个监听端口通过previous指针链接成单链表
+    ngx_connection_t   *connection;  //当前监听端口对应着的连接
 
     ngx_uint_t          worker;
 
+    /*为1时表示当前监听句柄有效，且执行ngx_init_cycle时不关闭监听端口*/
     unsigned            open:1;
+    /*
+     * 为1时表示使用已有的ngx_cycle_t结构体来初始化新的ngx_cycle_t结构体时，不关闭原先打开的监听端口;
+     * 为0时表示正常关闭曾经打开的监听端口
+     */
     unsigned            remain:1;
+    /*
+     * 为1时表示跳过设置当前的ngx_listening_t结构体的套接字，为0时正常初始化套接字
+     */
     unsigned            ignore:1;
 
     unsigned            bound:1;       /* already bound */
+    /*表示当前监听句柄是否来自前一个进程，如果为1，则表示来自前一个进程，一般会保留之前已经设置好的套接字，不做改变*/
     unsigned            inherited:1;   /* inherited from previous process */
     unsigned            nonblocking_accept:1;
+    /*为1时表示当前结构体对应的套接字已经监听*/
     unsigned            listen:1;
+    /*表示套接字是否阻塞*/
     unsigned            nonblocking:1;
     unsigned            shared:1;    /* shared between threads or processes */
+    /*为1时表示Nginx会将网络地址转变为字符串形式的地址*/
     unsigned            addr_ntop:1;
     unsigned            wildcard:1;
 
@@ -124,8 +140,8 @@ typedef enum {
 
 struct ngx_connection_s {
     void               *data;
-    ngx_event_t        *read;
-    ngx_event_t        *write;
+    ngx_event_t        *read;  //连接对应的读事件
+    ngx_event_t        *write; //连接对应的写事件
 
     ngx_socket_t        fd;
 
@@ -175,9 +191,9 @@ struct ngx_connection_s {
     unsigned            error:1;
     unsigned            destroyed:1;
 
-    unsigned            idle:1;
+    unsigned            idle:1;  //为1表示处于空闲状态，如keepalive请求中两次请求之间的状态
     unsigned            reusable:1;
-    unsigned            close:1;
+    unsigned            close:1;  //表示连接关闭
     unsigned            shared:1;
 
     unsigned            sendfile:1;

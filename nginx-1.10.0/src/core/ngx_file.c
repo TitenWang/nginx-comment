@@ -16,7 +16,9 @@ static ngx_atomic_t   temp_number = 0;
 ngx_atomic_t         *ngx_temp_number = &temp_number;
 ngx_atomic_int_t      ngx_random_number = 123456;
 
-
+/*
+ * 判断name是否是绝对路径，是则直接返回；否则在name前面添加前缀然后返回绝对路径
+ */
 ngx_int_t
 ngx_get_full_name(ngx_pool_t *pool, ngx_str_t *prefix, ngx_str_t *name)
 {
@@ -24,6 +26,7 @@ ngx_get_full_name(ngx_pool_t *pool, ngx_str_t *prefix, ngx_str_t *name)
     u_char     *p, *n;
     ngx_int_t   rc;
 
+    /*判断是否是绝对路径*/
     rc = ngx_test_full_name(name);
 
     if (rc == NGX_OK) {
@@ -40,6 +43,7 @@ ngx_get_full_name(ngx_pool_t *pool, ngx_str_t *prefix, ngx_str_t *name)
 
 #endif
 
+    /*在name前面添加前缀，使之成为绝对路径*/
     n = ngx_pnalloc(pool, len + name->len + 1);
     if (n == NULL) {
         return NGX_ERROR;
@@ -54,7 +58,7 @@ ngx_get_full_name(ngx_pool_t *pool, ngx_str_t *prefix, ngx_str_t *name)
     return NGX_OK;
 }
 
-
+/*ngx_test_full_name判断是否是绝对路径*/
 static ngx_int_t
 ngx_test_full_name(ngx_str_t *name)
 {
@@ -568,7 +572,7 @@ ngx_add_path(ngx_conf_t *cf, ngx_path_t **slot)
     return NGX_OK;
 }
 
-
+/*创建在配置文件中出现的文件目录*/
 ngx_int_t
 ngx_create_paths(ngx_cycle_t *cycle, ngx_uid_t user)
 {

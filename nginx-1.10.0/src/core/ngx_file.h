@@ -51,8 +51,8 @@ typedef struct {
     size_t                     len;
     size_t                     level[3];
 
-    ngx_path_manager_pt        manager;
-    ngx_path_loader_pt         loader;
+    ngx_path_manager_pt        manager;  //决定是否启用cache manager进程 
+    ngx_path_loader_pt         loader;  //决定是否启用cache loader进程 
     void                      *data;
 
     u_char                    *conf_file;

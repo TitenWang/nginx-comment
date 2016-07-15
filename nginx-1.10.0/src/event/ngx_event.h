@@ -30,12 +30,12 @@ typedef struct {
 struct ngx_event_s {
     void            *data;
 
-    unsigned         write:1;
+    unsigned         write:1;  //为1表示事件可写，表示tcp连接目前可写，即连接处于可以发送网络包的状态
 
-    unsigned         accept:1;
+    unsigned         accept:1;  //为1时表示可以为此事件建立新的连接
 
     /* used to detect the stale events in kqueue and epoll */
-    unsigned         instance:1;
+    unsigned         instance:1;  //为1表示已经过期
 
     /*
      * the event was passed or would be passed to a kernel;
@@ -57,7 +57,7 @@ struct ngx_event_s {
     unsigned         error:1;
 
     unsigned         timedout:1;
-    unsigned         timer_set:1;
+    unsigned         timer_set:1;  //timer_set是事件是否在定时器的标志位
 
     unsigned         delayed:1;
 
@@ -74,7 +74,7 @@ struct ngx_event_s {
     unsigned         channel:1;
     unsigned         resolver:1;
 
-    unsigned         cancelable:1;
+    unsigned         cancelable:1;  //事件是否取消的标志位
 
 #if (NGX_WIN32)
     /* setsockopt(SO_UPDATE_ACCEPT_CONTEXT) was successful */

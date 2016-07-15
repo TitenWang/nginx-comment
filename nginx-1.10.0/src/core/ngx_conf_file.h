@@ -118,14 +118,18 @@ struct ngx_conf_s {
     char                 *name;
     ngx_array_t          *args;  //args动态数组保存的是当前配置行的所有配置参数，即配置项及其参数
 
-    ngx_cycle_t          *cycle;
+    ngx_cycle_t          *cycle;  //指向全局唯一的ngx_cycle
     ngx_pool_t           *pool;
     ngx_pool_t           *temp_pool;
     ngx_conf_file_t      *conf_file;
     ngx_log_t            *log;
 
+    /*
+     * 这个ctx每次在在进入对应的server{}  location{}前都会指向零时保存父级的ctx，该{}解析完后在恢复到父的ctx。
+     * 指向ngx_cycle_t->conf_ctx 有多少个模块，就有多少个ctx指针数组成员  conf.ctx = cycle->conf_ctx;
+     */
     void                 *ctx;
-    ngx_uint_t            module_type;
+    ngx_uint_t            module_type;  //模块类型,如NGX_HTTP_MODULE NGX_EVENT_MODULE
     ngx_uint_t            cmd_type;
 
     ngx_conf_handler_pt   handler;

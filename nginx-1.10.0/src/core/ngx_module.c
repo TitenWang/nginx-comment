@@ -18,27 +18,27 @@ static ngx_uint_t ngx_module_ctx_index(ngx_cycle_t *cycle, ngx_uint_t type,
     ngx_uint_t index);
 
 
-ngx_uint_t         ngx_max_module;
-static ngx_uint_t  ngx_modules_n;
+ngx_uint_t         ngx_max_module;  //静态编译模块和动态加载模块数量和
+static ngx_uint_t  ngx_modules_n;  //ngx_modules_n表示当前静态编译进内核的模块数量
 
-
+/*ngx_preinit_modules()初始化模块的一些信息和部分相关全局变量*/
 ngx_int_t
 ngx_preinit_modules(void)
 {
     ngx_uint_t  i;
 
-    for (i = 0; ngx_modules[i]; i++) {
-        ngx_modules[i]->index = i;
-        ngx_modules[i]->name = ngx_module_names[i];
+    for (i = 0; ngx_modules[i]; i++) {  //ngx_modules数组也是编译后生成的。
+        ngx_modules[i]->index = i; //初始化当前模块在所有模块中的下标
+        ngx_modules[i]->name = ngx_module_names[i];  //初始化模块的名字，在编译后会生成ngx_module_names数组
     }
 
-    ngx_modules_n = i;
-    ngx_max_module = ngx_modules_n + NGX_MAX_DYNAMIC_MODULES;
+    ngx_modules_n = i;  //ngx_modules_n表示当前静态编译进内核的模块数量
+    ngx_max_module = ngx_modules_n + NGX_MAX_DYNAMIC_MODULES;  //静态编译模块和动态加载模块数量和
 
     return NGX_OK;
 }
 
-
+/*初始化cycle->modules cycle->modules_n*/
 ngx_int_t
 ngx_cycle_modules(ngx_cycle_t *cycle)
 {
@@ -47,6 +47,7 @@ ngx_cycle_modules(ngx_cycle_t *cycle)
      * copy static modules to it
      */
 
+    /*ngx_max_module表示静态编译模块和动态加载模块数量和*/
     cycle->modules = ngx_pcalloc(cycle->pool, (ngx_max_module + 1)
                                               * sizeof(ngx_module_t *));
     if (cycle->modules == NULL) {
@@ -56,12 +57,13 @@ ngx_cycle_modules(ngx_cycle_t *cycle)
     ngx_memcpy(cycle->modules, ngx_modules,
                ngx_modules_n * sizeof(ngx_module_t *));
 
+     /*ngx_modules_n表示当前静态编译进内核的模块数量*/
     cycle->modules_n = ngx_modules_n;
 
     return NGX_OK;
 }
 
-
+/*调用所有模块的init_module方法*/
 ngx_int_t
 ngx_init_modules(ngx_cycle_t *cycle)
 {

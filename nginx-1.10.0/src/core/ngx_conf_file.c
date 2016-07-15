@@ -57,7 +57,7 @@ static ngx_uint_t argument_number[] = {
     NGX_CONF_TAKE7
 };
 
-
+/*解析-g携带的参数中需要特殊处理的配置项及其参数值*/
 char *
 ngx_conf_param(ngx_conf_t *cf)
 {
@@ -66,6 +66,7 @@ ngx_conf_param(ngx_conf_t *cf)
     ngx_buf_t         b;
     ngx_conf_file_t   conf_file;
 
+    /*nginx处理配置文件时需要特殊处理的在命令行携带的参数，一般是-g 选项携带的参数*/
     param = &cf->cycle->conf_param;
 
     if (param->len == 0) {
@@ -89,6 +90,7 @@ ngx_conf_param(ngx_conf_t *cf)
     cf->conf_file = &conf_file;
     cf->conf_file->buffer = &b;
 
+    /*解析-g携带的参数中需要特殊处理的配置项及其参数值*/
     rv = ngx_conf_parse(cf, NULL);
 
     cf->conf_file = NULL;
@@ -109,9 +111,9 @@ ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
     ngx_conf_file_t  *prev, conf_file;
     ngx_conf_dump_t  *cd;
     enum {
-        parse_file = 0,
-        parse_block,
-        parse_param
+        parse_file = 0,  //解析配置文件(初始配置文件解析)
+        parse_block,  //解析配置文件中的块
+        parse_param   //解析-g选项携带的参数
     } type;
 
 #if (NGX_SUPPRESS_WARN)
@@ -123,6 +125,7 @@ ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
 
         /* open configuration file */
 
+        /*打开配置文件nginx.conf*/
         fd = ngx_open_file(filename->data, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
         if (fd == NGX_INVALID_FILE) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, ngx_errno,
@@ -131,15 +134,25 @@ ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
             return NGX_CONF_ERROR;
         }
 
+        /*保存之前的cf->conf_file*/
         prev = cf->conf_file;
 
         cf->conf_file = &conf_file;
 
+        /*获取文件信息，如uid gid等*/
         if (ngx_fd_info(fd, &cf->conf_file->file.info) == NGX_FILE_ERROR) {
             ngx_log_error(NGX_LOG_EMERG, cf->log, ngx_errno,
                           ngx_fd_info_n " \"%s\" failed", filename->data);
         }
 
+        /*
+         * 函数ngx_conf_read_token对配置文件内容逐个字符扫描并解析为单个的token，当然，该函数并不会频繁的去读取
+         * 配置文件，它每次从文件内读取足够多的内容以填满一个大小为NGX_CONF_BUFFER的缓存区（除了最后一次，即配置
+         * 文件剩余内容本来就不够了），这个缓存区在函数 ngx_conf_parse内申请并保存引用到变量cf->conf_file->buffer内，
+         * 函数 ngx_conf_read_token反复使用该缓存区
+         */
+
+        /*构建cf->conf_file->buffer缓冲区*/
         cf->conf_file->buffer = &buf;
 
         buf.start = ngx_alloc(NGX_CONF_BUFFER, cf->log);
@@ -152,6 +165,7 @@ ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
         buf.end = buf.last + NGX_CONF_BUFFER;
         buf.temporary = 1;
 
+        /*cf->conf_file指向当前配置文件/usr/local/nginx/conf/nginx.conf*/
         cf->conf_file->file.fd = fd;
         cf->conf_file->file.name.len = filename->len;
         cf->conf_file->file.name.data = filename->data;
@@ -161,6 +175,7 @@ ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
 
         type = parse_file;
 
+        /*复制一份配置文件*/
         if (ngx_dump_config
 #if (NGX_DEBUG)
             || 1
@@ -204,6 +219,10 @@ ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
 
 
     for ( ;; ) {
+        /* 
+         * 读取文件中的内容放到缓冲区中cf->conf_file->buffer，并进行解析，把解析的结果放到了cf->args 里面， 指令的每个单词都在数组中
+         * 占一个位置，比如 set debug off  ，那么数组中存三个位置。
+         */
         rc = ngx_conf_read_token(cf);
 
         /*
@@ -220,6 +239,7 @@ ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
             goto done;
         }
 
+        /*NGX_CONF_BLOCK_DONE解析块结束*/
         if (rc == NGX_CONF_BLOCK_DONE) {
 
             if (type != parse_block) {
@@ -293,6 +313,7 @@ failed:
 
 done:
 
+    /*解析结束，恢复环境，关闭文件，释放内存*/
     if (filename) {
         if (cf->conf_file->buffer->start) {
             ngx_free(cf->conf_file->buffer->start);
@@ -840,14 +861,20 @@ ngx_conf_include(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return rv;
 }
 
-
+/*
+ * 获取配置文件所在的绝对路径
+ */
 ngx_int_t
 ngx_conf_full_name(ngx_cycle_t *cycle, ngx_str_t *name, ngx_uint_t conf_prefix)
 {
     ngx_str_t  *prefix;
 
+    /*
+     * cycle->conf_prefix为"conf/"，cycle->prefix为"/usr/local/nginx/"
+     */
     prefix = conf_prefix ? &cycle->conf_prefix : &cycle->prefix;
 
+    /*判断name是否是绝对路径，是则直接返回；否则在name前面添加前缀然后返回绝对路径*/
     return ngx_get_full_name(cycle->pool, prefix, name);
 }
 
@@ -864,9 +891,11 @@ ngx_conf_open_file(ngx_cycle_t *cycle, ngx_str_t *name)
     ngx_str_null(&full);
 #endif
 
+    /*遍历Nginx内核需要打开的文件数组，看是否对应的文件已经存在*/
     if (name->len) {
         full = *name;
 
+        /*获取pidfile的绝对路径名*/
         if (ngx_conf_full_name(cycle, &full, 0) != NGX_OK) {
             return NULL;
         }
@@ -889,22 +918,25 @@ ngx_conf_open_file(ngx_cycle_t *cycle, ngx_str_t *name)
                 continue;
             }
 
+            /*找到打开的目标文件，返回目标文件对象*/
             if (ngx_strcmp(full.data, file[i].name.data) == 0) {
                 return &file[i];
             }
         }
     }
 
+    /*没有找到文件，申请文件对象存储节点*/
     file = ngx_list_push(&cycle->open_files);
     if (file == NULL) {
         return NULL;
     }
 
+    /*存在目标文件，下面需要重新打开*/
     if (name->len) {
         file->fd = NGX_INVALID_FILE;
         file->name = full;
 
-    } else {
+    } else {  //没有配置目标文件，改为标准错误输出
         file->fd = ngx_stderr;
         file->name = *name;
     }

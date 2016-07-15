@@ -14,7 +14,7 @@
 /* FreeBSD, NetBSD, OpenBSD */
 
 #define ngx_init_setproctitle(log) NGX_OK
-#define ngx_setproctitle(title)    setproctitle("%s", title)
+#define ngx_setproctitle(title)    setproctitle("%s", title)  //setproctitle()用于修改进程的名字
 
 
 #else /* !NGX_HAVE_SETPROCTITLE */

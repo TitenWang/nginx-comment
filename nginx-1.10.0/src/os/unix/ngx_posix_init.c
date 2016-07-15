@@ -29,7 +29,9 @@ ngx_os_io_t ngx_os_io = {
     0
 };
 
-
+/*
+ * 对Nginx内核中用到的一些和操作系统相关性大的全局变量进行初始化
+ */
 ngx_int_t
 ngx_os_init(ngx_log_t *log)
 {
@@ -41,18 +43,21 @@ ngx_os_init(ngx_log_t *log)
     }
 #endif
 
+    /*修改进程名字*/
     if (ngx_init_setproctitle(log) != NGX_OK) {
         return NGX_ERROR;
     }
 
+    /*ngx_pagesize为slab共享内存中每个分页的大小，默认为4KB*/
     ngx_pagesize = getpagesize();
     ngx_cacheline_size = NGX_CPU_CACHE_LINE;
 
+    /*ngx_pagesize_shift为ngx_pagesize页大小对应的位移，即4KB对应的位移为12*/
     for (n = ngx_pagesize; n >>= 1; ngx_pagesize_shift++) { /* void */ }
 
 #if (NGX_HAVE_SC_NPROCESSORS_ONLN)
     if (ngx_ncpu == 0) {
-        ngx_ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+        ngx_ncpu = sysconf(_SC_NPROCESSORS_ONLN); //获取CPU个数
     }
 #endif
 
@@ -60,14 +65,17 @@ ngx_os_init(ngx_log_t *log)
         ngx_ncpu = 1;
     }
 
+    /*这个函数便是在获取CPU的信息，根据CPU的型号对ngx_cacheline_size进行设置*/
     ngx_cpuinfo();
 
+    /*获取系统中可以打开的最大文件句柄数*/
     if (getrlimit(RLIMIT_NOFILE, &rlmt) == -1) {
         ngx_log_error(NGX_LOG_ALERT, log, errno,
                       "getrlimit(RLIMIT_NOFILE) failed");
         return NGX_ERROR;
     }
 
+    /*获取系统中可以打开的最大socket句柄数*/
     ngx_max_sockets = (ngx_int_t) rlmt.rlim_cur;
 
 #if (NGX_HAVE_INHERITED_NONBLOCK || NGX_HAVE_ACCEPT4)

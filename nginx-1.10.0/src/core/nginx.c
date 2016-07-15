@@ -174,15 +174,21 @@ ngx_module_t  ngx_core_module = {
 static ngx_uint_t   ngx_show_help;
 static ngx_uint_t   ngx_show_version;
 static ngx_uint_t   ngx_show_configure;
-static u_char      *ngx_prefix;
-static u_char      *ngx_conf_file;
-static u_char      *ngx_conf_params;
-static char        *ngx_signal;
+static u_char      *ngx_prefix;  //赋值见ngx_log_init，值为NGX_PREFIX 或者为nginx -p参数携带的参数
+static u_char      *ngx_conf_file;  //nginx -c携带的参数
+static u_char      *ngx_conf_params;  //nginx -g携带的参数
+static char        *ngx_signal;  //nginx -s携带的参数
 
 
-static char **ngx_os_environ;
+static char **ngx_os_environ;  //环境变量
 
-
+/*
+ *
+ */
+ /*
+  * __cdecl表示C语言默认的函数调用方法，即所有参数从右到左依次入栈，这些参数有调用者负责清除，被调用函数不会要求
+  * 调用者传递多少参数，调用者传递过多或过少的参数都不会引起编译错误。
+  */
 int ngx_cdecl
 main(int argc, char *const *argv)
 {
@@ -193,16 +199,19 @@ main(int argc, char *const *argv)
     ngx_conf_dump_t  *cd;
     ngx_core_conf_t  *ccf;
 
-    ngx_debug_init();
+    ngx_debug_init();  //设置全局变量ngx_debug_malloc
 
+    /*初始化系统错误码对应的描述性字符串*/
     if (ngx_strerror_init() != NGX_OK) {
         return 1;
     }
 
+    /*ngx_get_options()函数用于解析命令行参数，并设置命令行参数相应的标志位*/
     if (ngx_get_options(argc, argv) != NGX_OK) {
         return 1;
     }
 
+    /*根据ngx_get_options()函数中设置的标志位打印相关信息到标准输出上*/
     if (ngx_show_version) {
         ngx_show_version_info();
 
@@ -213,14 +222,17 @@ main(int argc, char *const *argv)
 
     /* TODO */ ngx_max_sockets = -1;
 
+    /*初始化并更新nginx内核使用的时间*/
     ngx_time_init();
 
 #if (NGX_PCRE)
     ngx_regex_init();
 #endif
 
+    /*获取master进程ID*/
     ngx_pid = ngx_getpid();
 
+    /*初始化全局错误日志对象ngx_log及前缀ngx_prefix*/
     log = ngx_log_init(ngx_prefix);
     if (log == NULL) {
         return 1;
@@ -240,19 +252,23 @@ main(int argc, char *const *argv)
     init_cycle.log = log;
     ngx_cycle = &init_cycle;
 
+    /*为进程唯一核心结构体ngx_cycle_t的创建内存池*/
     init_cycle.pool = ngx_create_pool(1024, log);
     if (init_cycle.pool == NULL) {
         return 1;
     }
 
+    /*保存命令行参数*/
     if (ngx_save_argv(&init_cycle, argc, argv) != NGX_OK) {
         return 1;
     }
 
+    /*ngx_process_options()用于初始化ngx_cycle的prefix, conf_prefix, conf_file, conf_param等*/
     if (ngx_process_options(&init_cycle) != NGX_OK) {
         return 1;
     }
 
+    /*对Nginx内核中用到的一些和操作系统相关性大的全局变量进行初始化*/
     if (ngx_os_init(log) != NGX_OK) {
         return 1;
     }
@@ -261,18 +277,22 @@ main(int argc, char *const *argv)
      * ngx_crc32_table_init() requires ngx_cacheline_size set in ngx_os_init()
      */
 
+    /*初始化循环冗余校验表，后续校验可以直接通过查表法*/
     if (ngx_crc32_table_init() != NGX_OK) {
         return 1;
     }
 
+    /*平滑升级时新版本master进程对旧版本master进程的监听句柄做继承处理*/
     if (ngx_add_inherited_sockets(&init_cycle) != NGX_OK) {
         return 1;
     }
 
+    /*ngx_preinit_modules()初始化模块的一些信息和部分相关全局变量*/
     if (ngx_preinit_modules() != NGX_OK) {
         return 1;
     }
 
+    /*初始化全局唯一的ngx_cycle_t*/
     cycle = ngx_init_cycle(&init_cycle);
     if (cycle == NULL) {
         if (ngx_test_config) {
@@ -309,6 +329,7 @@ main(int argc, char *const *argv)
         return 0;
     }
 
+    /*"nginx -s xxx"*/
     if (ngx_signal) {
         return ngx_signal_process(cycle, ngx_signal);
     }
@@ -325,6 +346,7 @@ main(int argc, char *const *argv)
 
 #if !(NGX_WIN32)
 
+    /*初始化信号*/
     if (ngx_init_signals(cycle->log) != NGX_OK) {
         return 1;
     }
@@ -343,6 +365,7 @@ main(int argc, char *const *argv)
 
 #endif
 
+    /*创建pidfile，并写入当前进程id*/
     if (ngx_create_pidfile(&ccf->pid, cycle->log) != NGX_OK) {
         return 1;
     }
@@ -351,6 +374,7 @@ main(int argc, char *const *argv)
         return 1;
     }
 
+    /*关闭日志文件流*/
     if (log->file->fd != ngx_stderr) {
         if (ngx_close_file(log->file->fd) == NGX_FILE_ERROR) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
@@ -360,10 +384,12 @@ main(int argc, char *const *argv)
 
     ngx_use_stderr = 0;
 
+    /*单进程模式运行*/
     if (ngx_process == NGX_PROCESS_SINGLE) {
         ngx_single_process_cycle(cycle);
 
     } else {
+        /*以一个master进程多个woker进程运行*/
         ngx_master_process_cycle(cycle);
     }
 
@@ -432,7 +458,13 @@ ngx_show_version_info(void)
     }
 }
 
-
+/*
+ * Nginx在不重启服务升级时，即平滑升级的时候，它会不重启master进程而启动新版本的nginx程序。
+ * 这样旧版本的master进程会通过execve系统调用来启动新版本的master进程。这是旧版本的master
+ * 进程必须通过一种方式告诉新版本的master进程这是在平滑升级，并且传递一些必要的信息。Nginx
+ * 是通过环境变量(NGINX)来传递这些信息的。新版本的master进程通过ngx_add_inherited_sockets()
+ * 方法由环境变量里读取平滑升级信息，并对旧版本Nginx服务监听的句柄做继承处理。
+ */
 static ngx_int_t
 ngx_add_inherited_sockets(ngx_cycle_t *cycle)
 {
@@ -440,6 +472,7 @@ ngx_add_inherited_sockets(ngx_cycle_t *cycle)
     ngx_int_t         s;
     ngx_listening_t  *ls;
 
+    /*获取环境变量,NGINX*/
     inherited = (u_char *) getenv(NGINX_VAR);
 
     if (inherited == NULL) {
@@ -449,6 +482,7 @@ ngx_add_inherited_sockets(ngx_cycle_t *cycle)
     ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
                   "using inherited sockets from \"%s\"", inherited);
 
+    /*初始化cycle->listening动态数组，初始情况下为十个ngx_listening_t元素*/
     if (ngx_array_init(&cycle->listening, cycle->pool, 10,
                        sizeof(ngx_listening_t))
         != NGX_OK)
@@ -456,9 +490,10 @@ ngx_add_inherited_sockets(ngx_cycle_t *cycle)
         return NGX_ERROR;
     }
 
+    /*遍历环境变量，获取旧版本Nginx服务所监听的socket句柄，做继承处理*/
     for (p = inherited, v = p; *p; p++) {
         if (*p == ':' || *p == ';') {
-            s = ngx_atoi(v, p - v);
+            s = ngx_atoi(v, p - v);  //字符串转整数
             if (s == NGX_ERROR) {
                 ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
                               "invalid socket number \"%s\" in " NGINX_VAR
@@ -467,8 +502,11 @@ ngx_add_inherited_sockets(ngx_cycle_t *cycle)
                 break;
             }
 
+            /*在这个循环遍历处理过程中，v始终都指向下一个待转换的字符串形式的socket句柄的开始处*/
+            /*这种处理方法值得学习*/
             v = p + 1;
 
+            /*将解析得到的socket句柄存放在动态数组cycle->listening中*/
             ls = ngx_array_push(&cycle->listening);
             if (ls == NULL) {
                 return NGX_ERROR;
@@ -486,12 +524,13 @@ ngx_add_inherited_sockets(ngx_cycle_t *cycle)
                       " environment variable, ignoring", v);
     }
 
-    ngx_inherited = 1;
+    ngx_inherited = 1;  //对旧版本nginx服务监听的socket句柄进行了继承标志位。
 
+    /*根据从旧版本Nginx中继承来的socket句柄，初始化socket对应的ngx_listening_t结构体的成员*/
     return ngx_set_inherited_sockets(cycle);
 }
 
-
+/*设置环境变量*/
 char **
 ngx_set_environment(ngx_cycle_t *cycle, ngx_uint_t *last)
 {
@@ -500,6 +539,7 @@ ngx_set_environment(ngx_cycle_t *cycle, ngx_uint_t *last)
     ngx_uint_t         i, n;
     ngx_core_conf_t   *ccf;
 
+    /*获取核心模块存储配置项的结构体指针*/
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
 
     if (last == NULL && ccf->environment) {
@@ -516,6 +556,7 @@ ngx_set_environment(ngx_cycle_t *cycle, ngx_uint_t *last)
         }
     }
 
+    /*未找到，新增一个元素*/
     var = ngx_array_push(&ccf->env);
     if (var == NULL) {
         return NULL;
@@ -524,6 +565,7 @@ ngx_set_environment(ngx_cycle_t *cycle, ngx_uint_t *last)
     var->len = 2;
     var->data = (u_char *) "TZ";
 
+    /*重新指向动态数组开始处，下面开始遍历*/
     var = ccf->env.elts;
 
 tz_found:
@@ -553,7 +595,7 @@ tz_found:
         *last = n;
 
     } else {
-        env = ngx_palloc(cycle->pool, (n + 1) * sizeof(char *));
+        env = ngx_palloc(cycle->pool, (n + 1) * sizeof(char *)); //存储环境变量内存
     }
 
     if (env == NULL) {
@@ -590,7 +632,7 @@ tz_found:
     return env;
 }
 
-
+/*用新的子进程启动新版本的nginx进程*/
 ngx_pid_t
 ngx_exec_new_binary(ngx_cycle_t *cycle, char *const *argv)
 {
@@ -614,6 +656,10 @@ ngx_exec_new_binary(ngx_cycle_t *cycle, char *const *argv)
         return NGX_INVALID_PID;
     }
 
+    /*
+     * cycle->listening.nelts * (NGX_INT32_LEN + 1)从下面赋值地方可以看出是两个监听socket之间有';'，所以需要+1;
+     * 申请内存的时候额外'+2'多申请2个字节内存，从下面拷贝NGINX_VAR时候可以看出多了个'='号，还有就是结尾的'\0';
+     */
     var = ngx_alloc(sizeof(NGINX_VAR)
                     + cycle->listening.nelts * (NGX_INT32_LEN + 1) + 2,
                     cycle->log);
@@ -622,6 +668,7 @@ ngx_exec_new_binary(ngx_cycle_t *cycle, char *const *argv)
         return NGX_INVALID_PID;
     }
 
+    /*下面执行的是生成环境变量"NGINX"用以传递老版本nginx监听的端口*/
     p = ngx_cpymem(var, NGINX_VAR "=", sizeof(NGINX_VAR));
 
     ls = cycle->listening.elts;
@@ -631,8 +678,9 @@ ngx_exec_new_binary(ngx_cycle_t *cycle, char *const *argv)
 
     *p = '\0';
 
-    env[n++] = var;
+    env[n++] = var;  //将刚生成的"NGINX"环境变量放在总的环境变量之后
 
+    /*申请额外的内存用于新的nginx进程修改名字使用*/
 #if (NGX_SETPROCTITLE_USES_ENV)
 
     /* allocate the spare 300 bytes for the new binary process title */
@@ -658,8 +706,10 @@ ngx_exec_new_binary(ngx_cycle_t *cycle, char *const *argv)
 
     ctx.envp = (char *const *) env;
 
+    /*获取核心模块存储配置项的结构体指针*/
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
 
+    /*重命名nginx.pid*/
     if (ngx_rename_file(ccf->pid.data, ccf->oldpid.data) == NGX_FILE_ERROR) {
         ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
                       ngx_rename_file_n " %s to %s failed "
@@ -672,10 +722,11 @@ ngx_exec_new_binary(ngx_cycle_t *cycle, char *const *argv)
         return NGX_INVALID_PID;
     }
 
+    /*执行新版本的nginx程序，返回的是用来执行系统调用execve的子进程的id，也是新版本nginx进程的id*/
     pid = ngx_execute(cycle, &ctx);
 
     if (pid == NGX_INVALID_PID) {
-        if (ngx_rename_file(ccf->oldpid.data, ccf->pid.data)
+        if (ngx_rename_file(ccf->oldpid.data, ccf->pid.data)  //升级失败，回退nginx.pid文件
             == NGX_FILE_ERROR)
         {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
@@ -692,6 +743,28 @@ ngx_exec_new_binary(ngx_cycle_t *cycle, char *const *argv)
 }
 
 
+/*
+Command-line parameters
+nginx supports the following command-line parameters: 
+
+-? | -h --print help for command-line parameters. 
+-c file --use an alternative configuration file instead of a default file. 
+-g directives --set global configuration directives, for example, 
+    e.g. nginx -g "pid /var/run/nginx.pid; worker_processes `sysctl -n hw.ncpu`;"
+-p prefix --set nginx path prefix, i.e. a directory that will keep server files (default value is /usr/local/nginx). 
+-q — suppress non-error messages during configuration testing. 
+-s signal --send a signal to the master process. The argument signal can be one of: 
+    stop --shut down quickly 
+    quit --shut down gracefully 
+    reload --reload configuration, start the new worker process with a new configuration, gracefully shut down old worker processes. 
+    reopen --reopen log files 
+-t --test the configuration file: nginx checks the configuration for correct syntax, and then tries to open files referred in the configuration. 
+-T --same as -t, but additionally dump configuration files to standard output (1.9.2). 
+-v --print nginx version. 
+-V --print nginx version, compiler version, and configure parameters. 
+*/
+
+/*解析命令行参数，并设置命令行参数对应的标志位*/
 static ngx_int_t
 ngx_get_options(int argc, char *const *argv)
 {
@@ -702,14 +775,15 @@ ngx_get_options(int argc, char *const *argv)
 
         p = (u_char *) argv[i];
 
-        if (*p++ != '-') {
+        /*从上面可以看到，Nginx支持的每个命令行参数都是以'-'字符开始的*/
+        if (*p++ != '-') {      //p++表示p指向了命令行选项的字符开始处，而不是'-'
             ngx_log_stderr(0, "invalid option: \"%s\"", argv[i]);
             return NGX_ERROR;
         }
 
         while (*p) {
 
-            switch (*p++) {
+            switch (*p++) {  //p++表示让p指向了命令行选项的下一个字符，可能是空格，也可能是对应该命令行选项的值
 
             case '?':
             case 'h':
@@ -739,13 +813,22 @@ ngx_get_options(int argc, char *const *argv)
                 ngx_quiet_mode = 1;
                 break;
 
+            /*
+             * '-p'选项用于指明ngx_prefix前缀，如果不通过命令行参数指定的话，则前缀为安装时候的路径，
+             * 默认情况下为/usr/local/nginx/，如果在configure的时候通过--prefix进行指定的话，则为--prefix
+             * 后面跟的路径。对于-p选项，Nginx支持如下两种类型的方式:
+             *     1. nginx -p /usr/local/nginx
+             *     2. nginx -p/usr/local/nginx
+             */
             case 'p':
+                /*如果*p不是NULL,表明是第二种情况，否则是第一种情况*/
                 if (*p) {
-                    ngx_prefix = p;
+                    ngx_prefix = p;  //将-p后面跟的前缀路径赋值给ngx_prefix
                     goto next;
                 }
 
-                if (argv[++i]) {
+                /*命令行参数选项和值是通过空格隔开的情况*/
+                if (argv[++i]) {    //++i之后，i指向了下一个命令行参数，此处即为命令行选项对应的值
                     ngx_prefix = (u_char *) argv[i];
                     goto next;
                 }
@@ -753,12 +836,20 @@ ngx_get_options(int argc, char *const *argv)
                 ngx_log_stderr(0, "option \"-p\" requires directory name");
                 return NGX_ERROR;
 
+            /*
+             * '-p'选项用于指明自定义的nginx配置文件，而不是用前缀路径下的配置文件，对于-c选项，Nginx支持如下
+             * 两种方式:
+             *     1. nginx -c/usr/local/nginx/conf/nginx.conf
+             *     2. nginx -c /usr/local/nginx/conf/nginx.conf
+             */
             case 'c':
+                /*如果*p不为NULL,则表明是第一种情况，否则为第二种情况*/
                 if (*p) {
                     ngx_conf_file = p;
                     goto next;
                 }
 
+                /*在执行++i之前argv[i]指向的是"-c"，执行++i之后，argv[i]指向的是"/usr/local/nginx/conf/nginx.conf"*/
                 if (argv[++i]) {
                     ngx_conf_file = (u_char *) argv[i];
                     goto next;
@@ -767,6 +858,7 @@ ngx_get_options(int argc, char *const *argv)
                 ngx_log_stderr(0, "option \"-c\" requires file name");
                 return NGX_ERROR;
 
+            /*-g选项的解析方式同'-p'和'-c'是类似的，-g选项用于指定配置文件中一些配置命令的值*/
             case 'g':
                 if (*p) {
                     ngx_conf_params = p;
@@ -781,6 +873,7 @@ ngx_get_options(int argc, char *const *argv)
                 ngx_log_stderr(0, "option \"-g\" requires parameter");
                 return NGX_ERROR;
 
+            /*-s选项用于指定一些信号操作nginx，如stop、quit、reload和reopen等*/
             case 's':
                 if (*p) {
                     ngx_signal = (char *) p;
@@ -798,7 +891,7 @@ ngx_get_options(int argc, char *const *argv)
                     || ngx_strcmp(ngx_signal, "reopen") == 0
                     || ngx_strcmp(ngx_signal, "reload") == 0)
                 {
-                    ngx_process = NGX_PROCESS_SIGNALLER;
+                    ngx_process = NGX_PROCESS_SIGNALLER;  //NGX_PROCESS_SIGNALLER表明nginx进程在处理信号
                     goto next;
                 }
 
@@ -819,7 +912,9 @@ ngx_get_options(int argc, char *const *argv)
     return NGX_OK;
 }
 
-
+/*
+ * ngx_save_argv()用于保存命令行参数至全局变量ngx_os_argv,ngx_argc,ngx_argv,ngx_os_environ
+ */
 static ngx_int_t
 ngx_save_argv(ngx_cycle_t *cycle, int argc, char *const *argv)
 {
@@ -841,8 +936,9 @@ ngx_save_argv(ngx_cycle_t *cycle, int argc, char *const *argv)
         return NGX_ERROR;
     }
 
+    /*将命令行参数保存在ngx_argv二维数组中*/
     for (i = 0; i < argc; i++) {
-        len = ngx_strlen(argv[i]) + 1;
+        len = ngx_strlen(argv[i]) + 1; /*"+1"是因为最后一个用来存放'\0'*/
 
         ngx_argv[i] = ngx_alloc(len, cycle->log);
         if (ngx_argv[i] == NULL) {
@@ -852,7 +948,7 @@ ngx_save_argv(ngx_cycle_t *cycle, int argc, char *const *argv)
         (void) ngx_cpystrn((u_char *) ngx_argv[i], (u_char *) argv[i], len);
     }
 
-    ngx_argv[i] = NULL;
+    ngx_argv[i] = NULL;  //最后一个设置为NULL,表示结束
 
 #endif
 
@@ -861,7 +957,9 @@ ngx_save_argv(ngx_cycle_t *cycle, int argc, char *const *argv)
     return NGX_OK;
 }
 
-
+/*
+ * ngx_process_options()用于初始化ngx_cycle的prefix, conf_prefix, conf_file, conf_param等字段
+ */
 static ngx_int_t
 ngx_process_options(ngx_cycle_t *cycle)
 {
@@ -872,6 +970,7 @@ ngx_process_options(ngx_cycle_t *cycle)
         len = ngx_strlen(ngx_prefix);
         p = ngx_prefix;
 
+        /*前缀默认添加'/'*/
         if (len && !ngx_path_separator(p[len - 1])) {
             p = ngx_pnalloc(cycle->pool, len + 1);
             if (p == NULL) {
@@ -927,7 +1026,7 @@ ngx_process_options(ngx_cycle_t *cycle)
         cycle->conf_file.data = ngx_conf_file;
 
     } else {
-        ngx_str_set(&cycle->conf_file, NGX_CONF_PATH);
+        ngx_str_set(&cycle->conf_file, NGX_CONF_PATH);  //NGX_CONF_PATH为"conf/nginx.conf"
     }
 
     if (ngx_conf_full_name(cycle, &cycle->conf_file, 0) != NGX_OK) {

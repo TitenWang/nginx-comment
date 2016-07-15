@@ -176,7 +176,7 @@ ngx_inet6_addr(u_char *p, size_t len, u_char *addr)
 
 #endif
 
-
+/*将socket绑定的地址转换为字符串形式，即把sa中的ip和port组合成ip:port的形式存放在text中*/
 size_t
 ngx_sock_ntop(struct sockaddr *sa, socklen_t socklen, u_char *text, size_t len,
     ngx_uint_t port)

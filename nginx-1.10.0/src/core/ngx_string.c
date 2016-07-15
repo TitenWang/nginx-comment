@@ -28,7 +28,7 @@ ngx_strlow(u_char *dst, u_char *src, size_t n)
     }
 }
 
-
+/*字符串拷贝函数，将src指向的字符串拷贝n个字节到dst指向的内存处，并返回目的地址的最后一位*/
 u_char *
 ngx_cpystrn(u_char *dst, u_char *src, size_t n)
 {
