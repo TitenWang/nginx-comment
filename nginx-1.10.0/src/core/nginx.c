@@ -475,6 +475,7 @@ ngx_add_inherited_sockets(ngx_cycle_t *cycle)
     /*获取环境变量,NGINX*/
     inherited = (u_char *) getenv(NGINX_VAR);
 
+    /*如果inherited为NULL，表明不是平滑升级，及环境变量NGINX是空的*/
     if (inherited == NULL) {
         return NGX_OK;
     }
