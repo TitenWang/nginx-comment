@@ -4,6 +4,18 @@
  * Copyright (C) Nginx, Inc.
  */
 
+/*
+ *     作为web服务器，每一个用户请求至少对应着一个tcp连接，为了及时处理这个连接，至少需要一个读事件和一个写事件
+ * 使得epoll可以有效地根据触发的事件调用相应的模块读取请求或者发送响应。
+ *     Nginx在接受客户端的连接时，所使用的ngx_connenction_t结构体都是在启动阶段就预先分配好的，使用时从连接池获取即可
+ * 在ngx_cycle_t结构体中的connections和free_connenctions构成了连接池，其中connections指向的是整个连接池数组的首部，
+ * free_connections指向的则是空闲连接的首部，所有空闲的连接都以data成员作为指针连接成一个单向链表。一旦由用户发起
+ * 一个连接，就从free_connections指向的链表头获取一个空闲连接，同时free_connections指向下一个空闲连接。释放连接时
+ * 只需要把连接插入到free_connections链表头即可。
+ *     由于每个连接都有一个读事件和一个写事件与之对应。Nginx的做法是读事件数组、写事件数组和连接池数组是三个元素个数
+ * 相同的数组，所以根据数组下标就可以将连接、读事件和写事件一一对应起来，这三个数组的大小都是由connections配置项决定的。
+ */
+
 
 #include <ngx_config.h>
 #include <ngx_core.h>
@@ -449,6 +461,7 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
                 continue;
             }
 
+            /*从前一个进程继承过来的，不设置该套接字属性，复用原有套接字属性*/
             if (ls[i].inherited) {
 
                 /* TODO: close on exit */
@@ -971,7 +984,7 @@ ngx_configure_listening_sockets(ngx_cycle_t *cycle)
     return;
 }
 
-
+/*关闭监听socket，使得进程不再监听端口*/
 void
 ngx_close_listening_sockets(ngx_cycle_t *cycle)
 {
@@ -986,12 +999,14 @@ ngx_close_listening_sockets(ngx_cycle_t *cycle)
     ngx_accept_mutex_held = 0;
     ngx_use_accept_mutex = 0;
 
+    /*遍历cycle->listening中的监听对象*/
     ls = cycle->listening.elts;
     for (i = 0; i < cycle->listening.nelts; i++) {
 
-        c = ls[i].connection;
+        c = ls[i].connection;  //获取监听对象对应的连接对象
 
         if (c) {
+            /*如果读事件是活跃的，则从epoll中移除读事件*/
             if (c->read->active) {
                 if (ngx_event_flags & NGX_USE_EPOLL_EVENT) {
 
@@ -1008,14 +1023,16 @@ ngx_close_listening_sockets(ngx_cycle_t *cycle)
                 }
             }
 
+            /*释放连接*/
             ngx_free_connection(c);
-
+            /*将连接对应的socket句柄置为无效*/
             c->fd = (ngx_socket_t) -1;
         }
 
         ngx_log_debug2(NGX_LOG_DEBUG_CORE, cycle->log, 0,
                        "close listening %V #%d ", &ls[i].addr_text, ls[i].fd);
 
+        /*关闭socket句柄*/
         if (ngx_close_socket(ls[i].fd) == -1) {
             ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_socket_errno,
                           ngx_close_socket_n " %V failed", &ls[i].addr_text);
@@ -1036,14 +1053,14 @@ ngx_close_listening_sockets(ngx_cycle_t *cycle)
         }
 
 #endif
-
+        /*将监听socket置为无效*/
         ls[i].fd = (ngx_socket_t) -1;
     }
 
     cycle->listening.nelts = 0;
 }
 
-
+/*从连接池中获取一个空闲连接*/
 ngx_connection_t *
 ngx_get_connection(ngx_socket_t s, ngx_log_t *log)
 {
@@ -1053,6 +1070,12 @@ ngx_get_connection(ngx_socket_t s, ngx_log_t *log)
 
     /* disable warning: Win32 SOCKET is u_int while UNIX socket is int */
 
+    /*
+     * 对于poll、rtsig这样的事件模块，会以有效文件句柄数来预先创建这些ngx_connection_t结构体，以加速事件的收集
+     * 和分发。这时files就会保存着所有ngx_connection_t的指针组成的数组，files_n就是数组元素的总数，而文件句柄值
+     * 用来访问files数组成员
+     */
+     /*s >= ngx_cycle->files_n,表示该socket句柄是无效的*/
     if (ngx_cycle->files && (ngx_uint_t) s >= ngx_cycle->files_n) {
         ngx_log_error(NGX_LOG_ALERT, log, 0,
                       "the new socket has number %d, "
@@ -1063,8 +1086,9 @@ ngx_get_connection(ngx_socket_t s, ngx_log_t *log)
 
     c = ngx_cycle->free_connections;
 
+    /*并发量高的时候，有可能空闲连接已经耗尽*/
     if (c == NULL) {
-        ngx_drain_connections();
+        ngx_drain_connections();  //释放32个keepalive连接
         c = ngx_cycle->free_connections;
     }
 
@@ -1076,16 +1100,22 @@ ngx_get_connection(ngx_socket_t s, ngx_log_t *log)
         return NULL;
     }
 
-    ngx_cycle->free_connections = c->data;
-    ngx_cycle->free_connection_n--;
+    ngx_cycle->free_connections = c->data;  //连接未使用时data成员作为空闲连接链表的next指针
+    ngx_cycle->free_connection_n--;  //空闲连接数减1
 
+    /*将该socket句柄对应的连接对象ngx_cycle_t->files数组中*/
     if (ngx_cycle->files && ngx_cycle->files[s] == NULL) {
         ngx_cycle->files[s] = c;
     }
 
+    /*
+     * 这里之所以要暂存原有连接的读写事件是为了获取原有事件是否过期的标志位instance。
+     * 这样在新的连接中将读写事件的instance标志位赋值为暂存的原有事件过期标志位instance求反后的值
+     */
     rev = c->read;
     wev = c->write;
 
+    /*这里清零并没有将连接对应的读写事件所在内存清零，只是将连接中指向读写事件所在内存的指针清零*/
     ngx_memzero(c, sizeof(ngx_connection_t));
 
     c->read = rev;
@@ -1093,39 +1123,44 @@ ngx_get_connection(ngx_socket_t s, ngx_log_t *log)
     c->fd = s;
     c->log = log;
 
+    /*问题:结合下面赋值，为什么要用暂存的读事件的instance标志位*/
     instance = rev->instance;
 
     ngx_memzero(rev, sizeof(ngx_event_t));
     ngx_memzero(wev, sizeof(ngx_event_t));
 
+    /*将新连接的读写事件的instance赋值为暂存的原有连接事件的instance标志求反后的值*/
     rev->instance = !instance;
     wev->instance = !instance;
 
     rev->index = NGX_INVALID_INDEX;
     wev->index = NGX_INVALID_INDEX;
 
+    /*事件中的data成员通常都是指向事件对应的连接对象*/
     rev->data = c;
     wev->data = c;
 
-    wev->write = 1;
+    wev->write = 1;  //将write置为1，表示目前该连接对应的写事件可写，即可用于发送网络数据包
 
     return c;
 }
 
-
+/*回收连接，即将连接放入到空闲连接链表首部*/
 void
 ngx_free_connection(ngx_connection_t *c)
 {
+    /*将回收的连接放入到空闲连接链表的首部*/
     c->data = ngx_cycle->free_connections;
     ngx_cycle->free_connections = c;
     ngx_cycle->free_connection_n++;
 
+    /*将ngx_cycle_t->files数组中对应该连接对象的元素清零*/
     if (ngx_cycle->files && ngx_cycle->files[c->fd] == c) {
         ngx_cycle->files[c->fd] = NULL;
     }
 }
 
-
+/*关闭连接*/
 void
 ngx_close_connection(ngx_connection_t *c)
 {
@@ -1138,10 +1173,12 @@ ngx_close_connection(ngx_connection_t *c)
         return;
     }
 
+    /*如果连接对应的读事件在定时器中，清除定时器事件*/
     if (c->read->timer_set) {
         ngx_del_timer(c->read);
     }
 
+    /*如果连接对应的写事件在定时器中，清除定时器事件*/
     if (c->write->timer_set) {
         ngx_del_timer(c->write);
     }
@@ -1169,6 +1206,7 @@ ngx_close_connection(ngx_connection_t *c)
         ngx_delete_posted_event(c->write);
     }
 
+    /*读写事件close置位*/
     c->read->closed = 1;
     c->write->closed = 1;
 
@@ -1176,6 +1214,7 @@ ngx_close_connection(ngx_connection_t *c)
 
     log_error = c->log_error;
 
+    /*将连接归还到空闲连接链表中*/
     ngx_free_connection(c);
 
     fd = c->fd;
@@ -1185,6 +1224,7 @@ ngx_close_connection(ngx_connection_t *c)
         return;
     }
 
+    /*释放已回收连接的套接字句柄*/
     if (ngx_close_socket(fd) == -1) {
 
         err = ngx_socket_errno;
@@ -1216,13 +1256,18 @@ ngx_close_connection(ngx_connection_t *c)
     }
 }
 
-
+/*
+ * 那么reusable连接队列是如何建立的呢？这个比较简单，这里大体说一下：
+ * 在ngx_http_set_keepalive函数处理的最后阶段，会以第二个为1的形式调用ngx_reusable_connection函数。
+ * 而在ngx_http_keepalive_handler函数中会以参数0，来调用ngx_reusable_connection。
+ */
 void
 ngx_reusable_connection(ngx_connection_t *c, ngx_uint_t reusable)
 {
     ngx_log_debug1(NGX_LOG_DEBUG_CORE, c->log, 0,
                    "reusable connection: %ui", reusable);
 
+    /*一旦一个keepalive的连接被正常处理了，就调用ngx_queue_remove()将其从队列中移除*/
     if (c->reusable) {
         ngx_queue_remove(&c->queue);
 
@@ -1231,11 +1276,17 @@ ngx_reusable_connection(ngx_connection_t *c, ngx_uint_t reusable)
 #endif
     }
 
+    /*在ngx_http_set_keepalive()中会将reuseable置为1，置为1的效果就是将该连接加入到reusable_connections_queue链表头部*/
     c->reusable = reusable;
 
+    
+    /* 
+     * 当reusable为0时，意味着该keepalive被正常的处理掉了，不应该被再次添加  
+     * 到reusable队列中了。
+     */
     if (reusable) {
         /* need cast as ngx_cycle is volatile */
-
+        /*加入到ngx_cycle->reusable_connections_queue头部*/
         ngx_queue_insert_head(
             (ngx_queue_t *) &ngx_cycle->reusable_connections_queue, &c->queue);
 
@@ -1245,7 +1296,7 @@ ngx_reusable_connection(ngx_connection_t *c, ngx_uint_t reusable)
     }
 }
 
-
+/*释放长连接*/
 static void
 ngx_drain_connections(void)
 {
@@ -1253,23 +1304,32 @@ ngx_drain_connections(void)
     ngx_queue_t       *q;
     ngx_connection_t  *c;
 
+    /*清理32个长连接，以回收ngx_connenction_t对象给新连接使用*/
     for (i = 0; i < 32; i++) {
         if (ngx_queue_empty(&ngx_cycle->reusable_connections_queue)) {
             break;
         }
 
+        /*
+         * reusable_connections_queue是从头插入的，所以越靠近尾部的连接，空闲未被使用的时间就越长，这种情况下,
+         * 优先回收它
+         */
         q = ngx_queue_last(&ngx_cycle->reusable_connections_queue);
         c = ngx_queue_data(q, ngx_connection_t, queue);
 
         ngx_log_debug0(NGX_LOG_DEBUG_CORE, c->log, 0,
                        "reusing connection");
 
-        c->close = 1;
+        /*
+         * 这里的handler是ngx_http_keepalive_handler。在这个函数里，由于c->close标志位被置为1，所以会调用
+         * ngx_http_close_connection()来释放连接，这样keepalive连接就被强制释放了
+         */
+        c->close = 1;  //将close标志位置1，表示连接关闭
         c->read->handler(c->read);
     }
 }
 
-/*关闭空闲连接，并处理读事件*/
+/*关闭空闲连接*/
 void
 ngx_close_idle_connections(ngx_cycle_t *cycle)
 {
@@ -1284,6 +1344,10 @@ ngx_close_idle_connections(ngx_cycle_t *cycle)
 
         if (c[i].fd != (ngx_socket_t) -1 && c[i].idle) {
             c[i].close = 1;  //将close标志位置1，表示关闭
+            /*
+             * 这里的handler是ngx_http_keepalive_handler。在这个函数里，由于c->close标志位被置为1，所以会调用
+             * ngx_http_close_connection()来释放连接，这样keepalive连接就被强制释放了
+             */
             c[i].read->handler(c[i].read);  //调用读事件处理函数
         }
     }

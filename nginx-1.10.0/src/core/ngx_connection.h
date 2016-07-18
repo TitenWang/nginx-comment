@@ -139,26 +139,29 @@ typedef enum {
 
 
 struct ngx_connection_s {
+    /*
+     * 连接未使用时，data成员用于充当连接池中空闲连接链表的next指针，当连接被使用时，data成员由调用它的模块定义
+     */
     void               *data;
     ngx_event_t        *read;  //连接对应的读事件
     ngx_event_t        *write; //连接对应的写事件
 
-    ngx_socket_t        fd;
+    ngx_socket_t        fd;  //该连接对应的套接字句柄
 
-    ngx_recv_pt         recv;
-    ngx_send_pt         send;
-    ngx_recv_chain_pt   recv_chain;
-    ngx_send_chain_pt   send_chain;
+    ngx_recv_pt         recv;  //直接接收网络字节流的方法
+    ngx_send_pt         send;  //直接发送网络字节流的方法
+    ngx_recv_chain_pt   recv_chain;  //以ngx_chain_t链表为参数来接收网络字节流的方法
+    ngx_send_chain_pt   send_chain;  //以ngx_chain_t链表为参数来发送网络字节流的方法
 
-    ngx_listening_t    *listening;
+    ngx_listening_t    *listening; //这个连接对应的ngx_listening_t对象，此连接由listening监听端口的事件建立
 
-    off_t               sent;
+    off_t               sent;  //连接上已经发送出去的字节数
 
     ngx_log_t          *log;
 
-    ngx_pool_t         *pool;
+    ngx_pool_t         *pool; //这个内存池的大小由listening监听对象中的pool_size成员决定
 
-    int                 type;
+    int                 type;  //连接类型
 
     struct sockaddr    *sockaddr;  //客户端的sockaddr结构体
     socklen_t           socklen;  //sockaddr结构体长度
@@ -174,30 +177,43 @@ struct ngx_connection_s {
     struct sockaddr    *local_sockaddr;
     socklen_t           local_socklen;
 
+    /*用于接收、缓存客户端发来的字节流。每个事件消费模块可以自行决定从连接池中分配多大的空间给buffer*/
     ngx_buf_t          *buffer;
 
+    /*用来将当前连接以双向链表的形式添加到ngx_cycle_t结构体的reusable_connections_queue双向链表中，表示可重用连接*/
     ngx_queue_t         queue;
 
+    /*
+     * 连接使用的次数。ngx_connection_t结构体每次建立一条来自客户端的连接,或者用于主动向后端服务器发起连接时，
+     * number都会加1.
+     */
     ngx_atomic_uint_t   number;
 
-    ngx_uint_t          requests;
+    ngx_uint_t          requests;  //处理的请求次数
 
+    /*缓存中的业务类型*/
     unsigned            buffered:8;
 
-    unsigned            log_error:3;     /* ngx_connection_log_error_e */
+    unsigned            log_error:3;  //日志级别    /* ngx_connection_log_error_e */
 
     unsigned            unexpected_eof:1;
-    unsigned            timedout:1;
-    unsigned            error:1;
+    unsigned            timedout:1;  //为1表示连接已经超时
+    unsigned            error:1;  //为1表示连接处理过程中出错
     unsigned            destroyed:1;
 
     unsigned            idle:1;  //为1表示处于空闲状态，如keepalive请求中两次请求之间的状态
-    unsigned            reusable:1;
+    unsigned            reusable:1;  //为1表示可重用，表示可以被释放供新连接使用，和上述的queue字段配合使用
     unsigned            close:1;  //表示连接关闭
     unsigned            shared:1;
 
-    unsigned            sendfile:1;
+    unsigned            sendfile:1;  //为1时表示正将文件中的数据发往另一端
+    
+    /*
+     * 为1时表示只有当连接套接字对应的发送缓冲区必须满足最低设置的大小阈值是，事件驱动模块才会分发该事件
+     */
     unsigned            sndlowat:1;
+
+    /*tcp连接的nodelay和nopush特性*/
     unsigned            tcp_nodelay:2;   /* ngx_connection_tcp_nodelay_e */
     unsigned            tcp_nopush:2;    /* ngx_connection_tcp_nopush_e */
 

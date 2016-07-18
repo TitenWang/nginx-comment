@@ -36,7 +36,7 @@ struct ngx_shm_zone_s {
 
 
 struct ngx_cycle_s {
-    /*conf_ctx保存着所有模块存储配置项的结构体指针*/
+    /*conf_ctx保存着所有模块存储配置项的结构体指针(conf_ctx最里层那个数组存储的只有核心模块的配置项参数结构体指针数组)*/
     void                  ****conf_ctx;
     ngx_pool_t               *pool;
 
@@ -62,7 +62,7 @@ struct ngx_cycle_s {
     ngx_uint_t                modules_n;  
     ngx_uint_t                modules_used;    /* unsigned  modules_used:1; */
 
-    /*双向链表容器，元素类型是ngx_connection_t结构体，表示可重复使用的连接队列*/
+    /*双向链表容器，元素类型是ngx_connection_t结构体，表示可重复使用的连接队列(长连接)*/
     ngx_queue_t               reusable_connections_queue;
 
     /*动态数组，每个元素存储着ngx_listening_t成员，表示监听的端口及相关参数*/
@@ -115,7 +115,7 @@ struct ngx_cycle_s {
 
 typedef struct {
     ngx_flag_t                daemon;  //是否已后台方式运行标志位
-    ngx_flag_t                master;
+    ngx_flag_t                master;  //master模式的标志位
 
     /*从timer_resolution全局配置中解析到的参数，表示至少隔ms秒执行定时器中断，然后从epoll_wait返回更新内存时间事件*/
     ngx_msec_t                timer_resolution;

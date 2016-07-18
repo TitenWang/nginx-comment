@@ -3069,10 +3069,11 @@ ngx_http_keepalive_handler(ngx_event_t *rev)
     ngx_buf_t         *b;
     ngx_connection_t  *c;
 
-    c = rev->data;
+    c = rev->data;  //获取该事件对应的连接对象
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http keepalive handler");
 
+    /*如果事件超时或者close标志位被置为，则调用ngx_http_close_connection()释放长连接*/
     if (rev->timedout || c->close) {
         ngx_http_close_connection(c);
         return;
@@ -3520,7 +3521,7 @@ ngx_http_log_request(ngx_http_request_t *r)
     }
 }
 
-
+/*释放连接*/
 void
 ngx_http_close_connection(ngx_connection_t *c)
 {
@@ -3544,12 +3545,13 @@ ngx_http_close_connection(ngx_connection_t *c)
     (void) ngx_atomic_fetch_add(ngx_stat_active, -1);
 #endif
 
-    c->destroyed = 1;
+    c->destroyed = 1;  //destroyed置位，表示连接被破坏
 
     pool = c->pool;
 
     ngx_close_connection(c);
 
+    /*释放该连接的内存池*/
     ngx_destroy_pool(pool);
 }
 

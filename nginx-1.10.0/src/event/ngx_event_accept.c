@@ -20,7 +20,7 @@ static void ngx_debug_accepted_connection(ngx_event_conf_t *ecf,
 
 /*处理新连接事件的回调函数*/
 void
-ngx_event_accept(ngx_event_t *ev)
+ngx_event_accept(ngx_event_t *ev)  //这里的ev是在ngx_event_process_init函数中监听端口连接的读事件
 {
     socklen_t          socklen;
     ngx_err_t          err;
@@ -36,7 +36,7 @@ ngx_event_accept(ngx_event_t *ev)
     static ngx_uint_t  use_accept4 = 1;
 #endif
 
-	/*如果事件超时，则将监听端口的连接的读事件添加到事件驱动模块中*/
+	/*如果事件超时，则将监听端口连接的读事件添加到事件驱动模块中*/
     if (ev->timedout) {
         if (ngx_enable_accept_events((ngx_cycle_t *) ngx_cycle) != NGX_OK) {
             return;
@@ -49,12 +49,13 @@ ngx_event_accept(ngx_event_t *ev)
     ecf = ngx_event_get_conf(ngx_cycle->conf_ctx, ngx_event_core_module);
 
     if (!(ngx_event_flags & NGX_USE_KQUEUE_EVENT)) {
-        ev->available = ecf->multi_accept;
+        ev->available = ecf->multi_accept;  //available对应的是multi_accept配置项
     }
 
+    /*获取事件对应的连接*/
     lc = ev->data;
     ls = lc->listening;
-    ev->ready = 0;
+    ev->ready = 0;  //将事件就绪的标志位清零，因为此次就绪已经正在处理
 
     ngx_log_debug2(NGX_LOG_DEBUG_EVENT, ev->log, 0,
                    "accept on %V, ready: %d", &ls->addr_text, ev->available);
@@ -142,7 +143,11 @@ ngx_event_accept(ngx_event_t *ev)
         (void) ngx_atomic_fetch_add(ngx_stat_accepted, 1);
 #endif
 
-		/*初始化负载均衡的值*/
+		/*
+		 * ***********初始化负载均衡的值******************
+		 * 每来一个新连接事件，负载均衡阈值都会被重新计算，随着时间的推移，新连接事件处理的越来越多，剩余的空闲连接
+		 * 数量越来越少，直到ngx_accept_disabled 大于0，这个时候就会开始不接受新连接事件了，即开始负载均衡了
+         */
         ngx_accept_disabled = ngx_cycle->connection_n / 8
                               - ngx_cycle->free_connection_n;
 
@@ -158,6 +163,7 @@ ngx_event_accept(ngx_event_t *ev)
             return;
         }
 
+        /*tcp*/
         c->type = SOCK_STREAM;
 
 #if (NGX_STAT_STUB)
@@ -239,6 +245,7 @@ ngx_event_accept(ngx_event_t *ev)
         rev = c->read;
         wev = c->write;
 
+        /*将写事件就绪，因为这个时候如果有数据可以进行写操作，读事件在上面清零，因为已经在处理了*/
         wev->ready = 1;
 
         if (ngx_event_flags & NGX_USE_IOCP_EVENT) {
@@ -264,12 +271,17 @@ ngx_event_accept(ngx_event_t *ev)
          *             or protection by critical section or light mutex
          */
 
+        /*
+         * 连接使用的次数。ngx_connection_t结构体每次建立一条来自客户端的连接,或者用于主动向后端服务器发起连接时，
+         * number都会加1.
+         */
         c->number = ngx_atomic_fetch_add(ngx_connection_counter, 1);
 
 #if (NGX_STAT_STUB)
         (void) ngx_atomic_fetch_add(ngx_stat_handled, 1);
 #endif
 
+        /*将网络地址转换为字符串形式的地址*/
         if (ls->addr_ntop) {
             c->addr_text.data = ngx_pnalloc(c->pool, ls->addr_text_max_len);
             if (c->addr_text.data == NULL) {
@@ -305,7 +317,16 @@ ngx_event_accept(ngx_event_t *ev)
         }
 #endif
 
-		/*将新建立的连接添加到epoll中*/
+		/*将新建立的连接添加到epoll中，这样，在这个连接上如果收到用户请求，epoll_wait就会收集到这个连接的读写事件*/
+        /*
+         * 这里有一个比较不好理解的地方，那就是将这个连接对应的fd加入到epoll中进行监控，如果有读或写事件发生，按理说
+         * 应该调用读或写事件对应的回调方法进行处理，但是这个函数中并没有看到设置读写事件回调函数的地方。那设置读写事件
+         * 回调方法的地方在那里呢?我们知道在ngx_listening_t结构体中有一个回调方法，ngx_connection_handler_pt，这个
+         * 回调方法调用的时间是tcp连接建立后就会调用(在下面几行就有体现)，其实设置新建立连接读写事件的回调函数就是
+         * 在ngx_listening_t->ngx_connection_handler_pt中，如果是http报文，那么这个函数就是ngx_http_init_connection()
+         * 在这个函数中会将新建立连接的读事件设置为ngx_http_wait_request_handler()，表示开始处理用户请求;写事件设置为
+         * ngx_http_empty_handler()，啥事都不做，因为暂时不回响应，后续会在适当的时候重新设置。
+         */
         if (ngx_add_conn && (ngx_event_flags & NGX_USE_EPOLL_EVENT) == 0) {
             if (ngx_add_conn(c) == NGX_ERROR) {
                 ngx_close_accepted_connection(c);
@@ -316,14 +337,14 @@ ngx_event_accept(ngx_event_t *ev)
         log->data = NULL;
         log->handler = NULL;
 
-		//调用监听端口的回调函数
+		//当新的tcp连接建立成功后，调用监听端口的回调函数
         ls->handler(c);
 
         if (ngx_event_flags & NGX_USE_KQUEUE_EVENT) {
             ev->available--;
         }
 
-    } while (ev->available);
+    } while (ev->available);  //如果监听事件的available为1，表示一次性尽量多建立连接
 }
 
 
@@ -675,7 +696,7 @@ ngx_trylock_accept_mutex(ngx_cycle_t *cycle)
     ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "accept mutex lock failed: %ui", ngx_accept_mutex_held);
 
-	//ngx_shmtx_trylock表明获取锁失败，但ngx_accept_mutex_held为1表明进程还在已获取锁状态，异常，需处理
+	//ngx_shmtx_trylock返回0表明获取锁失败，但ngx_accept_mutex_held为1表明进程还在已获取锁状态，异常，需处理
     if (ngx_accept_mutex_held) {
         if (ngx_disable_accept_events(cycle, 0) == NGX_ERROR) {
             return NGX_ERROR;
@@ -687,7 +708,7 @@ ngx_trylock_accept_mutex(ngx_cycle_t *cycle)
     return NGX_OK;
 }
 
-
+/*使能所有监听端口连接的读事件*/
 static ngx_int_t
 ngx_enable_accept_events(ngx_cycle_t *cycle)
 {
@@ -700,10 +721,12 @@ ngx_enable_accept_events(ngx_cycle_t *cycle)
 
         c = ls[i].connection;
 
+        /*c->read->active为1表明读事件已经添加到事件驱动模块中了*/
         if (c == NULL || c->read->active) {
             continue;
         }
 
+        /*将监听端口连接的读事件添加到事件驱动模块中*/
         if (ngx_add_event(c->read, NGX_READ_EVENT, 0) == NGX_ERROR) {
             return NGX_ERROR;
         }
@@ -712,7 +735,7 @@ ngx_enable_accept_events(ngx_cycle_t *cycle)
     return NGX_OK;
 }
 
-
+/*移除所有监听端口连接的读事件*/
 static ngx_int_t
 ngx_disable_accept_events(ngx_cycle_t *cycle, ngx_uint_t all)
 {
@@ -742,6 +765,7 @@ ngx_disable_accept_events(ngx_cycle_t *cycle, ngx_uint_t all)
 
 #endif
 
+        /*移除监听端口连接的读事件*/
         if (ngx_del_event(c->read, NGX_READ_EVENT, NGX_DISABLE_EVENT)
             == NGX_ERROR)
         {

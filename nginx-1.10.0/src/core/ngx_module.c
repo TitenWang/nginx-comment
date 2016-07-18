@@ -80,7 +80,7 @@ ngx_init_modules(ngx_cycle_t *cycle)
     return NGX_OK;
 }
 
-
+/*计算某一类型模块的数量，并初始化该类型模块的ctx_index*/
 ngx_int_t
 ngx_count_modules(ngx_cycle_t *cycle, ngx_uint_t type)
 {
@@ -91,10 +91,11 @@ ngx_count_modules(ngx_cycle_t *cycle, ngx_uint_t type)
     max = 0;
 
     /* count appropriate modules, set up their indices */
-
+    /*遍历所有模块*/
     for (i = 0; cycle->modules[i]; i++) {
         module = cycle->modules[i];
 
+        /*匹配模块类型*/
         if (module->type != type) {
             continue;
         }
@@ -102,7 +103,7 @@ ngx_count_modules(ngx_cycle_t *cycle, ngx_uint_t type)
         if (module->ctx_index != NGX_MODULE_UNSET_INDEX) {
 
             /* if ctx_index was assigned, preserve it */
-
+            /*如果某一模块已经设置了该模块在同类型模块中的序号，则复用该序号*/
             if (module->ctx_index > max) {
                 max = module->ctx_index;
             }
@@ -115,7 +116,7 @@ ngx_count_modules(ngx_cycle_t *cycle, ngx_uint_t type)
         }
 
         /* search for some free index */
-
+        /*获取某一类型模块的在该类模块中可用最小序号*/
         module->ctx_index = ngx_module_ctx_index(cycle, type, next);
 
         if (module->ctx_index > max) {
@@ -316,7 +317,7 @@ again:
     return index;
 }
 
-
+/*获取某一类型模块的在该类模块中可用最小序号*/
 static ngx_uint_t
 ngx_module_ctx_index(ngx_cycle_t *cycle, ngx_uint_t type, ngx_uint_t index)
 {
@@ -326,7 +327,7 @@ ngx_module_ctx_index(ngx_cycle_t *cycle, ngx_uint_t type, ngx_uint_t index)
 again:
 
     /* find an unused ctx_index */
-
+    /*遍历所有模块，获取同类型模块中可用的最小序号*/
     for (i = 0; cycle->modules[i]; i++) {
         module = cycle->modules[i];
 
@@ -334,6 +335,13 @@ again:
             continue;
         }
 
+        /*如果当前index已经被同类型模块使用了，则加1，从新开始遍历*/
+        /*
+         * 这里之所以index++后每次都要重新遍历所有模块是因为虽然所有模块是按序号从小到大排序的。但是同一类型的模块
+         * 在同类型模块中的序号即ctx_index并不是从小到大排序的。举个例子，比如index此时为5，第二个http类型模块的index为8，
+         * ctx_index为6，当遍历index为9的http模块时，恰好该模块的ctx_index为5，那么经过此轮遍历，index为6.如果不重新
+         * 遍历所有模块，而是接着遍历下一个模块，那么最终返回的index是6。这个结果显然是错误的，因为index至少应该为7
+         */
         if (module->ctx_index == index) {
             index++;
             goto again;

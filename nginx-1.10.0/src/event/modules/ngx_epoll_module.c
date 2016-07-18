@@ -4,6 +4,12 @@
  * Copyright (C) Nginx, Inc.
  */
 
+ /*
+  * *****************************************epoll机制***********************************************
+  * 在Linux内核中申请一个简易的文件系统，调用epoll_create方法建立一个epoll对象(在epoll文件系统中给这个句柄分配资源)
+  * 然后在合适的时候调用epoll_ctl向epoll对象中添加、修改或者删除事件，最后调用epoll_wait收集已经发生的事件
+  */
+
 
 #include <ngx_config.h>
 #include <ngx_core.h>
@@ -13,21 +19,34 @@
 #if (NGX_TEST_BUILD_EPOLL)
 
 /* epoll declarations */
-
+/* 表示对应的连接上有数据可以读出(tcp连接的远端主动关闭连接也相当于可读事件，因为需要处理发送来的fin包)*/
 #define EPOLLIN        0x001
+
+/*表示对应的连接上有紧急的数据需要读*/
 #define EPOLLPRI       0x002
+
+/*表示对应的连接上可以写入数据发送(主动向上游服务器发起非阻塞的tcp连接，连接建立成功的事件也相当于可写事件)*/
 #define EPOLLOUT       0x004
+
 #define EPOLLRDNORM    0x040
 #define EPOLLRDBAND    0x080
 #define EPOLLWRNORM    0x100
 #define EPOLLWRBAND    0x200
 #define EPOLLMSG       0x400
+
+/*表示对应的连接发生错误*/
 #define EPOLLERR       0x008
+
+/*表示对应的连接被挂起*/
 #define EPOLLHUP       0x010
 
+/*表示tcp连接的远端关闭或者半关闭连接*/
 #define EPOLLRDHUP     0x2000
 
+/*表示将事件的触发方式设置为边缘触发(ET)，系统默认为水平出发(LT)*/
 #define EPOLLET        0x80000000
+
+/*表示这个事件只处理一次，下次需要处理时需要重新加入epoll*/
 #define EPOLLONESHOT   0x40000000
 
 #define EPOLL_CTL_ADD  1
@@ -93,7 +112,7 @@ struct io_event {
 #endif
 #endif /* NGX_TEST_BUILD_EPOLL */
 
-
+/*epoll模块用于存储配置项参数的结构体*/
 typedef struct {
     ngx_uint_t  events;
     ngx_uint_t  aio_requests;
@@ -132,8 +151,8 @@ static char *ngx_epoll_init_conf(ngx_cycle_t *cycle, void *conf);
  * nevents 表示的是epoll_wait一次可以返回的最多事件数目
  */
 static int                  ep = -1;
-static struct epoll_event  *event_list;
-static ngx_uint_t           nevents;
+static struct epoll_event  *event_list;  //用于进行epoll_wait系统调用时传递内核态事件
+static ngx_uint_t           nevents;  //进行epoll_wait系统调用时一次最多可以返回的事件个数
 
 #if (NGX_HAVE_EVENTFD)
 static int                  notify_fd = -1;
@@ -143,18 +162,23 @@ static ngx_connection_t     notify_conn;
 
 #if (NGX_HAVE_FILE_AIO)
 
-int                         ngx_eventfd = -1;
-aio_context_t               ngx_aio_ctx = 0;
+int                         ngx_eventfd = -1;  //内核文件异步io对应的描述符，由eventfd系统调用赋值
+aio_context_t               ngx_aio_ctx = 0;   //内核文件异步io上下文
 
-static ngx_event_t          ngx_eventfd_event;
-static ngx_connection_t     ngx_eventfd_conn;
+static ngx_event_t          ngx_eventfd_event; //内核文件异步io对应的连接对象的读事件
+static ngx_connection_t     ngx_eventfd_conn;  //内核文件异步io对应的连接对象
 
 #endif
 
 static ngx_str_t      epoll_name = ngx_string("epoll");
 
+/*epoll事件模块支持的配置项指令*/
 static ngx_command_t  ngx_epoll_commands[] = {
 
+    /*
+     * 在调用epoll_wait时，将由第二个参数和第三个参数告诉Linux内核一次最多可以返回多少个事件，这个配置项表示,
+     * 调用一次epoll_wait最多可以返回的事件数，当然它也会预分配那么多的epoll_event结构体用于存储事件
+     */
     { ngx_string("epoll_events"),
       NGX_EVENT_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_num_slot,
@@ -162,6 +186,7 @@ static ngx_command_t  ngx_epoll_commands[] = {
       offsetof(ngx_epoll_conf_t, events),
       NULL },
 
+    /*指明在开启异步I/O且使用io_setup系统调用初始化异步I/O上下文环境时，初始分配的异步I/O事件个数*/
     { ngx_string("worker_aio_requests"),
       NGX_EVENT_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_num_slot,
@@ -172,7 +197,7 @@ static ngx_command_t  ngx_epoll_commands[] = {
       ngx_null_command
 };
 
-
+/*ngx_epoll_module模块实现的事件模块的通用接口*/
 ngx_event_module_t  ngx_epoll_module_ctx = {
     &epoll_name,
     ngx_epoll_create_conf,               /* create configuration */
@@ -196,6 +221,7 @@ ngx_event_module_t  ngx_epoll_module_ctx = {
     }
 };
 
+/*ngx_epoll_module实现的模块通用接口*/
 ngx_module_t  ngx_epoll_module = {
     NGX_MODULE_V1,
     &ngx_epoll_module_ctx,               /* module context */
@@ -219,21 +245,26 @@ ngx_module_t  ngx_epoll_module = {
  * as syscalls instead of libaio usage, because the library header file
  * supports eventfd() since 0.3.107 version only.
  */
-
+/*
+ * 初始化文件异步io的上下文，执行成功后ctx就是分配的上下文描述符，这个异步io上下文将至少可以处理nr_reqs个事件
+ */
 static int
 io_setup(u_int nr_reqs, aio_context_t *ctx)
 {
     return syscall(SYS_io_setup, nr_reqs, ctx);
 }
 
-
+/*销毁文件异步io上下文*/
 static int
 io_destroy(aio_context_t ctx)
 {
     return syscall(SYS_io_destroy, ctx);
 }
 
-
+/*
+ * 从已完成的文件异步io操作队列中读取操作，将获取[min_nr,nr]个事件，events是执行完成的事件数组,tmo是值在获取
+ * min_nr个事件前的等待时间
+ */
 static int
 io_getevents(aio_context_t ctx, long min_nr, long nr, struct io_event *events,
     struct timespec *tmo)
@@ -249,7 +280,7 @@ ngx_epoll_aio_init(ngx_cycle_t *cycle, ngx_epoll_conf_t *epcf)
     struct epoll_event  ee;
 
 #if (NGX_HAVE_SYS_EVENTFD_H)
-    ngx_eventfd = eventfd(0, 0);
+    ngx_eventfd = eventfd(0, 0);  //调用eventfd()系统调用可以创建一个efd描述符
 #else
     ngx_eventfd = syscall(SYS_eventfd, 0);
 #endif
@@ -266,29 +297,33 @@ ngx_epoll_aio_init(ngx_cycle_t *cycle, ngx_epoll_conf_t *epcf)
 
     n = 1;
 
+    /*设置ngx_eventfd为非阻塞*/
     if (ioctl(ngx_eventfd, FIONBIO, &n) == -1) {
         ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
                       "ioctl(eventfd, FIONBIO) failed");
         goto failed;
     }
 
+    /*初始化文件异步io上下文，aio_requests表示至少可以处理的异步文件io事件个数*/
     if (io_setup(epcf->aio_requests, &ngx_aio_ctx) == -1) {
         ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
                       "io_setup() failed");
         goto failed;
     }
 
-    ngx_eventfd_event.data = &ngx_eventfd_conn;
+    /*设置异步io完成时通知的事件*/
+    ngx_eventfd_event.data = &ngx_eventfd_conn;  //ngx_event_t->data成员通常就是事件对应的连接对象
     ngx_eventfd_event.handler = ngx_epoll_eventfd_handler;
     ngx_eventfd_event.log = cycle->log;
-    ngx_eventfd_event.active = 1;
+    ngx_eventfd_event.active = 1;  //active为1，表示就绪，其实是下面就要将其加入到epoll中所以这里置1
     ngx_eventfd_conn.fd = ngx_eventfd;
-    ngx_eventfd_conn.read = &ngx_eventfd_event;
+    ngx_eventfd_conn.read = &ngx_eventfd_event;  //内核文件异步io对应的连接对象读事件为ngx_eventfd_event
     ngx_eventfd_conn.log = cycle->log;
 
-    ee.events = EPOLLIN|EPOLLET;
+    ee.events = EPOLLIN|EPOLLET;  //监控读事件
     ee.data.ptr = &ngx_eventfd_conn;
 
+    /*将异步文件io的通知的描述符加入到epoll监控中*/
     if (epoll_ctl(ep, EPOLL_CTL_ADD, ngx_eventfd, &ee) != -1) {
         return;
     }
@@ -315,7 +350,14 @@ failed:
 
 #endif
 
-/*初始化epoll模块*/
+/*
+ * 初始化epoll模块
+ * 1.调用epoll_create方法创建epoll对象
+ * 2.创建event_list数组，用于进行epoll_wait调用时传递内核态事件
+ * 3.初始化eventfd(如果配置了的话)
+ * 4.初始化异步文件IO(如果配置了的话)
+ * 5.设置epoll的触发方式为ET模式
+ */
 static ngx_int_t
 ngx_epoll_init(ngx_cycle_t *cycle, ngx_msec_t timer)
 {
@@ -325,7 +367,7 @@ ngx_epoll_init(ngx_cycle_t *cycle, ngx_msec_t timer)
     epcf = ngx_event_get_conf(cycle->conf_ctx, ngx_epoll_module);
 
     if (ep == -1) {
-		/*创建epoll句柄*/
+		/*调用epoll_create系统调用创建epoll句柄*/
         ep = epoll_create(cycle->connection_n / 2);
 
         if (ep == -1) {
@@ -520,9 +562,23 @@ ngx_epoll_add_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
     ngx_connection_t    *c;
     struct epoll_event   ee;
 
+    /*获取事件对应的连接*/
     c = ev->data;
 
+    /*下面会根据event参数确定当前事件是读事件还是写事件，这会决定events是加上EPOLLIN还是EPOLLOUT标志位*/
     events = (uint32_t) event;
+
+    /*
+     * 在Nginx中通过是epoll_ctl来监控读写事件的，这个时候的操作主要有两个，add和mod。当一个fd第一次注册到epoll
+     * 时我们使用的是add操作方式，如果之前对这个fd已经添加过读写事件的监控，那么就需要通过mod来修改原来的监控方式
+     * 如果一个fd被重复add，会报错
+     */
+    /*
+     * 基于上面所说的epoll_ctl的注意之处，Nginx为了避免这种情况发生，当需要在epoll加入对一个fd的读事件进行监控时，
+     * Nginx先看下这个fd对应的写事件的状态，如果这个fd对应的写事件是有效的，即e->active标志位为1，表明之前这个fd
+     * 以NGX_WRITE_EVENT加入(add)到epoll中了，此时只需要使用mod方式修改其监控方式即可，不能采用add方式。当加入对一个fd
+     * 的写事件的监控也是一个意思。
+     */
 
     if (event == NGX_READ_EVENT) {
         e = c->write;
@@ -547,26 +603,29 @@ ngx_epoll_add_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
 	 */
     if (e->active) {
         op = EPOLL_CTL_MOD;
-        events |= prev;
+        events |= prev;  //将之前的event也加入到events中，新旧事件标志都需要进行监控
 
     } else {
         op = EPOLL_CTL_ADD;
     }
 
+    /*加入flags到events标志位中*/
     ee.events = events | (uint32_t) flags;
-    ee.data.ptr = (void *) ((uintptr_t) c | ev->instance);  //用于后续判断事件是否过期
+    /*将事件的instance标志位添加到连接最后一位用于后续判断事件是否过期,在处理事件的时候用来判断事件是否已经过期了*/
+    ee.data.ptr = (void *) ((uintptr_t) c | ev->instance);
 
     ngx_log_debug3(NGX_LOG_DEBUG_EVENT, ev->log, 0,
                    "epoll add event: fd:%d op:%d ev:%08XD",
                    c->fd, op, ee.events);
 
+    /*调用epoll_ctl向epoll对象中添加或者修改事件*/
     if (epoll_ctl(ep, op, c->fd, &ee) == -1) {
         ngx_log_error(NGX_LOG_ALERT, ev->log, ngx_errno,
                       "epoll_ctl(%d, %d) failed", op, c->fd);
         return NGX_ERROR;
     }
 
-	//事件置为活跃
+	//因为fd对应的该事件已经加入到了epoll中，因此置为活跃
     ev->active = 1;
 #if 0
     ev->oneshot = (flags & NGX_ONESHOT_EVENT) ? 1 : 0;
@@ -596,6 +655,7 @@ ngx_epoll_del_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
         return NGX_OK;
     }
 
+    /*获取事件对应的连接*/
     c = ev->data;
 
 	/*此处原理类似于add_event中的实现*/
@@ -608,9 +668,15 @@ ngx_epoll_del_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
         prev = EPOLLIN|EPOLLRDHUP;
     }
 
+    /*
+     * e->active为1表明这个fd已经通过另一个事件加入到epoll的监控中了，因为我们现在要移除这个fd对应的event类型的事件,
+     * 那么我们需要通过mod方式修改，只保留该fd加入到epoll中的除了event之外的其他类型的事件。举个例子，如果这个fd已经
+     * 把NGX_READ_EVENT和NGX_WRITE_EVENT都加入到epoll监控中了，此次需要移除NGX_READ_EVENT，那么就只在epoll保留该fd的
+     * NGX_WRITE_EVENT类型的事件
+     */
     if (e->active) {
         op = EPOLL_CTL_MOD;
-        ee.events = prev | (uint32_t) flags;
+        ee.events = prev | (uint32_t) flags;  //保留除了此次需要移除的事件类型之外的其他之前已经加入到epoll监控的事件类型
         ee.data.ptr = (void *) ((uintptr_t) c | ev->instance);
 
     } else {
@@ -629,7 +695,7 @@ ngx_epoll_del_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
         return NGX_ERROR;
     }
 
-	/*将事件置为不活跃*/
+	/*因为该fd的该事件已经从epoll中移除了，所以将该fd对应的该事件置为不活跃*/
     ev->active = 0;
 
     return NGX_OK;
@@ -641,6 +707,7 @@ ngx_epoll_add_connection(ngx_connection_t *c)
 {
     struct epoll_event  ee;
 
+    /*将连接对应的读写事件都加入epoll中*/
     ee.events = EPOLLIN|EPOLLOUT|EPOLLET|EPOLLRDHUP;
     ee.data.ptr = (void *) ((uintptr_t) c | c->read->instance);
 
@@ -653,14 +720,17 @@ ngx_epoll_add_connection(ngx_connection_t *c)
         return NGX_ERROR;
     }
 
-	/*将连接对应的读和写事件均设置为活跃*/
+	/* 
+	 * 将连接对应的读和写事件均设置为活跃，因为添加一个连接到epoll监控中，那么表示这个连接对应的读写事件均
+	 * 加入epoll监控中了
+     */
     c->read->active = 1;
     c->write->active = 1;
 
     return NGX_OK;
 }
 
-
+/*从epoll中移除对一个连接的监控*/
 static ngx_int_t
 ngx_epoll_del_connection(ngx_connection_t *c, ngx_uint_t flags)
 {
@@ -673,6 +743,10 @@ ngx_epoll_del_connection(ngx_connection_t *c, ngx_uint_t flags)
      * before the closing the file descriptor
      */
 
+    /*
+     * 如果flags包含了NGX_CLOSE_EVENT，说明连接对应的fd已经关闭了，那么我们就不需要调用epoll_ctl移除，系统会自动移除
+     * 这个时候只需要把连接对应的读写事件的标志位清零即可
+     */
     if (flags & NGX_CLOSE_EVENT) {
         c->read->active = 0;
         c->write->active = 0;
@@ -682,6 +756,7 @@ ngx_epoll_del_connection(ngx_connection_t *c, ngx_uint_t flags)
     ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0,
                    "epoll del connection: fd:%d", c->fd);
 
+    /*执行移除操作*/
     op = EPOLL_CTL_DEL;
     ee.events = 0;
     ee.data.ptr = NULL;
@@ -692,6 +767,7 @@ ngx_epoll_del_connection(ngx_connection_t *c, ngx_uint_t flags)
         return NGX_ERROR;
     }
 
+    /*如果是从epoll中移除这个连接，那么需要将这个连接对应的读写事件的active标志位清零*/
     c->read->active = 0;
     c->write->active = 0;
 
@@ -700,7 +776,7 @@ ngx_epoll_del_connection(ngx_connection_t *c, ngx_uint_t flags)
 
 
 #if (NGX_HAVE_EVENTFD)
-
+/*封装了eventfd相关的write系统调用*/
 static ngx_int_t
 ngx_epoll_notify(ngx_event_handler_pt handler)
 {
@@ -737,6 +813,7 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
     ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "epoll timer: %M", timer);
 
+    /*通过系统调用epoll_wait获取已经发生的事件，返回值为获取的就绪事件个数，如果为-1，表示调用出错*/
     events = epoll_wait(ep, event_list, (int) nevents, timer);
 
     err = (events == -1) ? ngx_errno : 0;
@@ -746,6 +823,7 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
         ngx_time_update();
     }
 
+    /*错误处理*/
     if (err) {
         if (err == NGX_EINTR) {
 
@@ -777,10 +855,10 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
 
 	/*循环处理epoll_wait返回的就绪事件*/
     for (i = 0; i < events; i++) {
-        c = event_list[i].data.ptr;
+        c = event_list[i].data.ptr;  //获取事件对应的连接
 
-        instance = (uintptr_t) c & 1;
-        c = (ngx_connection_t *) ((uintptr_t) c & (uintptr_t) ~1);
+        instance = (uintptr_t) c & 1; //取出添加事件到epoll中附加的事件超时标志位instance
+        c = (ngx_connection_t *) ((uintptr_t) c & (uintptr_t) ~1);  //还原连接，去除最后一位的instance标志位
 
 		/*获取读事件*/
         rev = c->read;
@@ -805,6 +883,7 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
                        "epoll: fd:%d ev:%04XD d:%p",
                        c->fd, revents, event_list[i].data.ptr);
 
+        /*连接出现错误，EPOLLHUP表示收到了对方发送的rst报文。检测到这两种类型时，tcp连接中可能还有数据未被读取*/
         if (revents & (EPOLLERR|EPOLLHUP)) {
             ngx_log_debug2(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                            "epoll_wait() error on fd:%d ev:%04XD",
@@ -819,6 +898,33 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
         }
 #endif
 
+        /*
+         * 1）监听的fd(监听socket)，此fd的设置等待事件：EPOLLIN 或者EPOLLET |EPOLLIN 
+         *     
+         *    由于此socket只监听有无连接，谈不上写和其他操作。故只有这两类。（默认是LT模式，即EPOLLLT |EPOLLIN）    
+         *    说明：如果在这个socket上也设置EPOLLOUT等，也不会出错，只是这个socket不会收到这样的消息。
+         *
+         * 2）客户端正常关闭,即client 端close()联接
+         *     对端正常关闭（程序里close()，shell下kill或ctr+c），触发EPOLLIN和EPOLLRDHUP，
+         * 但是不触发EPOLLERR和EPOLLHUP.
+         *     server会报某个sockfd可读，即EPOLLIN来临。然后recv一下，如果返回0再掉用epoll_ctl中的
+         * EPOLL_CTL_DEL , 同时close(sockfd)。
+         *     有些系统会收到一个EPOLLRDHUP，当然检测这个是最好不过了。只可惜是有些系统检测不到，
+         * 如果能加上对EPOLLRDHUP的处理那就是万能的了。
+         *
+         * 3）客户端异常关闭：
+         *     客户端异常关闭，会触发EPOLLERR和EPOLLHUP，并不会通知服务器。正常关闭时服务端执行read可以返回0。
+         * 异常断开时检测不到的,此时服务器再给一个已经关闭的socket写数据时会出错，服务器才明白对方可能已经异常断开了（读也可以）。
+         *     epoll中就是向已经断开的socket写或者读，会发生EPOLLERR，即表明已经断开。
+         */
+
+        /*
+         * 如果连接发生错误但未置EPOLLIN及EPOLLOUT，这时我们加上EPOLLIN和EPOLLOUT，在调用读/写事件的
+         * 回调函数时就会知道为什么出现错误。 如果不加EPOLLIN和EPOLLOUT，后面就没法调用读/写事件的
+         * 回调函数也就无法处理该连接了。
+         * 只有在采取行动（比如读一个已经关闭的socket，或者写一个已经关闭的socket）时候，才知道对方是否关闭了。
+         * 这个时候，如果对方异常关闭了，则会出现EPOLLERR
+         */
         if ((revents & (EPOLLERR|EPOLLHUP))
              && (revents & (EPOLLIN|EPOLLOUT)) == 0)
         {
@@ -840,12 +946,12 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
             }
 #endif
 
-            rev->ready = 1;
+            rev->ready = 1;  //读事件准备就绪
 
 			/*
-			 * NGX_POST_EVENTS表示延后处理
-			 * 如果是新连接事件，则加入到ngx_posted_accept_events
-			 * 否则加入到ngx_posted_events
+			 * NGX_POST_EVENTS表示延后处理，根据是否是新连接事件将事件加入两个队列。
+			 * 如果是新连接事件，则加入到ngx_posted_accept_events，否则加入到ngx_posted_events
+			 * 在ngx_event_process_and_timer()中处理完ngx_posted_accept_events后就会释放负载均衡锁
 			 */
             if (flags & NGX_POST_EVENTS) {
                 queue = rev->accept ? &ngx_posted_accept_events
@@ -854,7 +960,7 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
                 ngx_post_event(rev, queue);
 
             } else {
-                rev->handler(rev);  //立即处理
+                rev->handler(rev);  //立即调用读事件的回调方法处理这个事件
             }
         }
 
@@ -875,7 +981,7 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
                 continue;
             }
 
-            wev->ready = 1;
+            wev->ready = 1;  //写事件准备就绪
 #if (NGX_THREADS)
             wev->complete = 1;
 #endif
@@ -895,6 +1001,7 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
 
 #if (NGX_HAVE_FILE_AIO)
 
+/*epoll_wait返回ngx_eventfd_event事件后就会调用其回调该方法处理已经完成的异步io事件*/
 static void
 ngx_epoll_eventfd_handler(ngx_event_t *ev)
 {
@@ -904,11 +1011,12 @@ ngx_epoll_eventfd_handler(ngx_event_t *ev)
     ngx_err_t         err;
     ngx_event_t      *e;
     ngx_event_aio_t  *aio;
-    struct io_event   event[64];
+    struct io_event   event[64]; //一次性最多处理64个异步io事件
     struct timespec   ts;
 
     ngx_log_debug0(NGX_LOG_DEBUG_EVENT, ev->log, 0, "eventfd handler");
 
+    /*通过read获取已经完成的事件数目，并设置到ready中，注意这里的ready可以大于64*/
     n = read(ngx_eventfd, &ready, 8);
 
     err = ngx_errno;
@@ -935,13 +1043,14 @@ ngx_epoll_eventfd_handler(ngx_event_t *ev)
 
     while (ready) {
 
+        /*从已完成的异步io队列中读取已完成的事件，返回值代表获取的事件个数*/
         events = io_getevents(ngx_aio_ctx, 1, 64, event, &ts);
 
         ngx_log_debug1(NGX_LOG_DEBUG_EVENT, ev->log, 0,
                        "io_getevents: %d", events);
 
         if (events > 0) {
-            ready -= events;
+            ready -= events;  //计算剩余已完成的异步io事件
 
             for (i = 0; i < events; i++) {
 
@@ -950,16 +1059,17 @@ ngx_epoll_eventfd_handler(ngx_event_t *ev)
                                 event[i].data, event[i].obj,
                                 event[i].res, event[i].res2);
 
+                /*data成员指向这个异步io事件对应着的实际事件*/
                 e = (ngx_event_t *) (uintptr_t) event[i].data;
 
                 e->complete = 1;
-                e->active = 0;
-                e->ready = 1;
+                e->active = 0;  
+                e->ready = 1;  //事件已经就绪
 
                 aio = e->data;
                 aio->res = event[i].res;
 
-                ngx_post_event(e, &ngx_posted_events);
+                ngx_post_event(e, &ngx_posted_events);  //将异步io事件加入到ngx_posted_events普通读写事件队列中
             }
 
             continue;

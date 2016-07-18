@@ -21,8 +21,8 @@ static ngx_int_t ngx_poll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
 static char *ngx_poll_init_conf(ngx_cycle_t *cycle, void *conf);
 
 
-static struct pollfd  *event_list;
-static ngx_uint_t      nevents;
+static struct pollfd  *event_list;  //用于进行epoll_wait系统调用时传递内核态事件
+static ngx_uint_t      nevents;  //nevents就是调用epoll_wait系统调用时一次最多可以返回事件个数
 
 
 static ngx_str_t    poll_name = ngx_string("poll");

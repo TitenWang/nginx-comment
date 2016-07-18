@@ -244,10 +244,10 @@
 
 
 struct ngx_module_s {
-    ngx_uint_t            ctx_index;
-    ngx_uint_t            index;
+    ngx_uint_t            ctx_index;  //表明了模块在相同类型模块中的序号(Nginx允许定义子类型，如事件类型等)
+    ngx_uint_t            index;  //所有模块在ngx_modules.c文件中的ngx_modules数组中的序号
 
-    char                 *name;
+    char                 *name;  //模块的名字
 
     ngx_uint_t            spare0;
     ngx_uint_t            spare1;

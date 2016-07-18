@@ -53,7 +53,7 @@ ngx_event_find_timer(void)
     return (ngx_msec_t) (timer > 0 ? timer : 0);
 }
 
-
+/*定时器事件超时处理*/
 void
 ngx_event_expire_timers(void)
 {

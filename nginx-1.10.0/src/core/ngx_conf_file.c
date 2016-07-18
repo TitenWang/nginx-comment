@@ -432,9 +432,9 @@ ngx_conf_handler(ngx_conf_t *cf, ngx_int_t last)
             conf = NULL;
 
             if (cmd->type & NGX_DIRECT_CONF) {
-                conf = ((void **) cf->ctx)[cf->cycle->modules[i]->index];
+                conf = ((void **) cf->ctx)[cf->cycle->modules[i]->index]; 
 
-            } else if (cmd->type & NGX_MAIN_CONF) {
+            } else if (cmd->type & NGX_MAIN_CONF) {  //比如解析到的是"events {}",此时conf为ngx_cycle_t->conf_ctx[5]。
                 conf = &(((void **) cf->ctx)[cf->cycle->modules[i]->index]);
 
             } else if (cf->ctx) {

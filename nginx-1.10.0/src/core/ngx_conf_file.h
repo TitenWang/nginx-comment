@@ -177,7 +177,7 @@ typedef struct {
 char * ngx_conf_deprecated(ngx_conf_t *cf, void *post, void *data);
 char *ngx_conf_check_num_bounds(ngx_conf_t *cf, void *post, void *data);
 
-
+/*获取核心模块的用于存储配置项参数的结构体指针*/
 #define ngx_get_conf(conf_ctx, module)  conf_ctx[module.index]
 
 
