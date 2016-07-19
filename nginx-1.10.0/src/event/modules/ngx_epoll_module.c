@@ -102,9 +102,9 @@ int epoll_wait(int epfd, struct epoll_event *events, int nevents, int timeout)
 typedef u_int  aio_context_t;
 
 struct io_event {
-    uint64_t  data;  /* the data field from the iocb */
-    uint64_t  obj;   /* what iocb this event came from */
-    int64_t   res;   /* result code for this event */
+    uint64_t  data;  /* the data field from the iocb */  //与提交事件时对应的iocb结构体中的aio_data成员是一致的
+    uint64_t  obj;   /* what iocb this event came from */  //指向提交事件时对应的struct iocb结构体
+    int64_t   res;   /* result code for this event */  //异步io请求结果，res大于等于0表示成功，小于0表示失败
     int64_t   res2;  /* secondary result */
 };
 
@@ -115,7 +115,7 @@ struct io_event {
 /*epoll模块用于存储配置项参数的结构体*/
 typedef struct {
     ngx_uint_t  events;
-    ngx_uint_t  aio_requests;
+    ngx_uint_t  aio_requests;  //至少可以处理的异步io事件个数
 } ngx_epoll_conf_t;
 
 
@@ -150,7 +150,7 @@ static char *ngx_epoll_init_conf(ngx_cycle_t *cycle, void *conf);
  * event_list 表示的是用来存储内核返回的就绪事件
  * nevents 表示的是epoll_wait一次可以返回的最多事件数目
  */
-static int                  ep = -1;
+static int                  ep = -1;  //epoll对象，由epoll_create()创建
 static struct epoll_event  *event_list;  //用于进行epoll_wait系统调用时传递内核态事件
 static ngx_uint_t           nevents;  //进行epoll_wait系统调用时一次最多可以返回的事件个数
 
@@ -162,11 +162,11 @@ static ngx_connection_t     notify_conn;
 
 #if (NGX_HAVE_FILE_AIO)
 
-int                         ngx_eventfd = -1;  //内核文件异步io对应的描述符，由eventfd系统调用赋值
+int                         ngx_eventfd = -1;  //用于通知异步io事件的描述符，由eventfd系统调用赋值
 aio_context_t               ngx_aio_ctx = 0;   //内核文件异步io上下文
 
-static ngx_event_t          ngx_eventfd_event; //内核文件异步io对应的连接对象的读事件
-static ngx_connection_t     ngx_eventfd_conn;  //内核文件异步io对应的连接对象
+static ngx_event_t          ngx_eventfd_event; //异步io事件完成后进行通知的描述符ngx_eventfd对应的读事件
+static ngx_connection_t     ngx_eventfd_conn;  //异步io事件完成后进行通知的描述符ngx_eventfd对应的连接对象
 
 #endif
 
@@ -321,9 +321,17 @@ ngx_epoll_aio_init(ngx_cycle_t *cycle, ngx_epoll_conf_t *epcf)
     ngx_eventfd_conn.log = cycle->log;
 
     ee.events = EPOLLIN|EPOLLET;  //监控读事件
+
+    /*ngx_eventfd被监控到有读事件发生时，会利用ee.data.ptr获取对应的连接对象,详见ngx_epoll_process_events()*/
     ee.data.ptr = &ngx_eventfd_conn;
 
-    /*将异步文件io的通知的描述符加入到epoll监控中*/
+    /*
+     * 将异步文件io的通知的描述符加入到epoll监控中，因为在ngx_file_aio_read()函数中将struct iocb结构体的aio_flags
+     * 成员赋值为IOCB_FLAG_RESFD，他会告诉内核当有异步io请求处理完成时使用eventfd描述符通知应用程序，这使得异步io、
+     * eventfd和epoll可以结合起来使用。另外，将将struct iocb结构体的aio_resfd设置为ngx_eventfd，那么当有异步io事件
+     * 完成时，epoll就会收到ngx_eventfd描述符的读事件，然后ngx_epoll_process_events()中会调用其读事件回调函数，即
+     * ngx_epoll_eventfd_handler处理内核的通知。
+     */
     if (epoll_ctl(ep, EPOLL_CTL_ADD, ngx_eventfd, &ee) != -1) {
         return;
     }
@@ -855,7 +863,7 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
 
 	/*循环处理epoll_wait返回的就绪事件*/
     for (i = 0; i < events; i++) {
-        c = event_list[i].data.ptr;  //获取事件对应的连接
+        c = event_list[i].data.ptr;  //获取事件对应的连接，在调用epoll_ctl函数的时候，会将该epoll_event->data.ptr设置为对应的连接
 
         instance = (uintptr_t) c & 1; //取出添加事件到epoll中附加的事件超时标志位instance
         c = (ngx_connection_t *) ((uintptr_t) c & (uintptr_t) ~1);  //还原连接，去除最后一位的instance标志位
@@ -1001,7 +1009,7 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
 
 #if (NGX_HAVE_FILE_AIO)
 
-/*epoll_wait返回ngx_eventfd_event事件后就会调用其回调该方法处理已经完成的异步io事件*/
+/*epoll_wait返回ngx_eventfd_event事件后就会调用该方法处理已经完成的异步io事件*/
 static void
 ngx_epoll_eventfd_handler(ngx_event_t *ev)
 {
@@ -1059,15 +1067,22 @@ ngx_epoll_eventfd_handler(ngx_event_t *ev)
                                 event[i].data, event[i].obj,
                                 event[i].res, event[i].res2);
 
-                /*data成员指向这个异步io事件对应着的实际事件*/
+                /*
+                 * data成员指向这个异步io事件对应着的实际事件，这个与struct iocb结构体中的aio_data成员是一致的。
+                 * struct iocb控制块中的aio_data成员被赋予对应io事件对象是在函数ngx_file_aio_read()中实现的。
+                 */
                 e = (ngx_event_t *) (uintptr_t) event[i].data;
 
                 e->complete = 1;
                 e->active = 0;  
                 e->ready = 1;  //事件已经就绪
 
+                /*
+                 * 异步io事件ngx_event_t->data成员指向的就是ngx_event_aio_t对象，这个在ngx_file_aio_init()函数中
+                 * 可以看到
+                 */
                 aio = e->data;
-                aio->res = event[i].res;
+                aio->res = event[i].res;  //res成员代表的是异步io事件执行的结果
 
                 ngx_post_event(e, &ngx_posted_events);  //将异步io事件加入到ngx_posted_events普通读写事件队列中
             }

@@ -167,7 +167,7 @@ struct ngx_event_s {
 
 struct ngx_event_aio_s {
     void                      *data;
-    ngx_event_handler_pt       handler;
+    ngx_event_handler_pt       handler;  //有业务模块实现
     ngx_file_t                *file;
 
 #if (NGX_HAVE_AIO_SENDFILE)
