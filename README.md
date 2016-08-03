@@ -15,3 +15,6 @@ nginx1.10.0源代码注释
 
 2016-07-19
 此次主要是完成了Nginx文件异步I/O处理流程的注解，包括Nginx如何实现异步文件I/O、eventfd和epoll的结合。
+
+2016-08-03
+此次主要是增加了关于Nginx的信号控制以及eventfd、异步I/O和epoll结合的总结，并建立了了一个用来输出总结的个人博客，并将之前的总结和这两篇总结移植到博客中，博客地址为：https://TitenWang.github.io/。
