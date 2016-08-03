@@ -54,7 +54,7 @@
 #define EPOLL_CTL_MOD  3
 
 typedef union epoll_data {
-    void         *ptr;
+    void         *ptr;  //Nginx中用这个来保存epoll监控的fd对应的连接对象
     int           fd;
     uint32_t      u32;
     uint64_t      u64;

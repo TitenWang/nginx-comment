@@ -52,7 +52,7 @@ struct ngx_listening_s {
     /* should be here because of the deferred accept */
     ngx_msec_t          post_accept_timeout;
 
-    ngx_listening_t    *previous;  //前一个ngx_listening_t，多个监听端口通过previous指针链接成单链表
+    ngx_listening_t    *previous;  //存储的是老版本Nginx中和新版本Nginx监听同一个地址的监听对象
     ngx_connection_t   *connection;  //当前监听端口对应着的连接
 
     ngx_uint_t          worker;
