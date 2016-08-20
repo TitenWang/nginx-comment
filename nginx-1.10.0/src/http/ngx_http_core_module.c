@@ -2939,7 +2939,7 @@ ngx_http_get_forwarded_addr_internal(ngx_http_request_t *r, ngx_addr_t *addr,
     return NGX_DECLINED;
 }
 
-
+/* 解析server配置块时的回调函数 */
 static char *
 ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
 {
@@ -2954,13 +2954,23 @@ ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
     ngx_http_core_srv_conf_t    *cscf, **cscfp;
     ngx_http_core_main_conf_t   *cmcf;
 
+    /* 创建用于存储配置项结构体的上下文对象 */
     ctx = ngx_pcalloc(cf->pool, sizeof(ngx_http_conf_ctx_t));
     if (ctx == NULL) {
         return NGX_CONF_ERROR;
     }
 
+    /* cf->ctx中存放的是解析http块时创建的用于存储配置项结构体的上下文对象 */
     http_ctx = cf->ctx;
+
+    /*
+     * 解析server创建的用于存储配置项结构体的上下文对象中的main_conf成员指向该server所属
+     * 的http块内的上下文对象中的main_conf。因为解析http块创建的上下文对象中的main_conf
+     * 指针数组是全局唯一的
+     */
     ctx->main_conf = http_ctx->main_conf;
+
+    /*server块下的用于存储配置项结构体的上下文对象的srv_conf、loc_conf需要重新分配内存*/
 
     /* the server{}'s srv_conf */
 
@@ -2976,6 +2986,10 @@ ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
         return NGX_CONF_ERROR;
     }
 
+    /*
+     * 遍历所有http模块，调用create_srv_conf和create_loc_conf方法，将返回的结构体指针按照
+     * http模块类型的序号ctx_index保存到上面创建的ctx->srv_conf和ctx->loc_conf指针数组中
+     */
     for (i = 0; cf->cycle->modules[i]; i++) {
         if (cf->cycle->modules[i]->type != NGX_HTTP_MODULE) {
             continue;
@@ -3005,12 +3019,20 @@ ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
 
     /* the server configuration context */
 
+    /*
+     * 获取当前server配置块下ngx_http_core_module模块的配置项结构体，并将解析该server配置块时创建的
+     * 用于存储配置项结构体的上下文对象设置到该结构体的ctx成员中
+     */
     cscf = ctx->srv_conf[ngx_http_core_module.ctx_index];
     cscf->ctx = ctx;
 
-
+    /*获取ngx_http_core_module模块的全局配置项结构体*/
     cmcf = ctx->main_conf[ngx_http_core_module.ctx_index];
 
+    /*
+     * http{}块下的所有server配置块的ngx_http_core_module模块的配置项结构体会存放在
+     * ngx_http_core_module模块的全局配置项结构体的servers成员中
+     */
     cscfp = ngx_array_push(&cmcf->servers);
     if (cscfp == NULL) {
         return NGX_CONF_ERROR;
@@ -3025,21 +3047,29 @@ ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
     cf->ctx = ctx;
     cf->cmd_type = NGX_HTTP_SRV_CONF;
 
+    /* 解析server配置块内的所有配置项 */
     rv = ngx_conf_parse(cf, NULL);
 
     *cf = pcf;
 
+    /* 
+     * 如果解析完该server配置块的所有配置项后发现并没有出现listen配置指令，那么Nginx内核将为该server
+     * 配置块指定默认的listen配置指令参数
+     */
     if (rv == NGX_CONF_OK && !cscf->listen) {
         ngx_memzero(&lsopt, sizeof(ngx_http_listen_opt_t));
 
         sin = &lsopt.u.sockaddr_in;
 
+        /* 默认监听ipv4地址 */
         sin->sin_family = AF_INET;
 #if (NGX_WIN32)
         sin->sin_port = htons(80);
 #else
+        /* 指定默认监听的端口 */
         sin->sin_port = htons((getuid() == 0) ? 80 : 8000);
 #endif
+        /* 指定监听的ip地址，INADDR_ANY表示该机器上所有ip地址 */
         sin->sin_addr.s_addr = INADDR_ANY; // 0.0.0.0。表示不确定地址或所有地址、任意地址
 
         lsopt.socklen = sizeof(struct sockaddr_in);
@@ -3058,6 +3088,7 @@ ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
         (void) ngx_sock_ntop(&lsopt.u.sockaddr, lsopt.socklen, lsopt.addr,
                              NGX_SOCKADDR_STRLEN, 1);
 
+        /* 将默认listen选项添加到cmcf->ports->addrs中 */
         if (ngx_http_add_listen(cf, cscf, &lsopt) != NGX_OK) {
             return NGX_CONF_ERROR;
         }

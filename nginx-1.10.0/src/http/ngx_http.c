@@ -308,7 +308,7 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         module = cf->cycle->modules[m]->ctx;
 
 		/*
-		 *解析完配置项后执行，一般用于将阶段处理函数添加到handlers数组
+		 * 解析完配置项后执行，一般用于将阶段处理函数添加到handlers数组
 		 */
         if (module->postconfiguration) {
             if (module->postconfiguration(cf) != NGX_OK) {
@@ -317,6 +317,7 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
     }
 
+    /* 初始化Nginx将会使用到的变量 */
     if (ngx_http_variables_init_vars(cf) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
@@ -350,7 +351,11 @@ failed:
     return rv;
 }
 
-/*初始化阶段处理函数，handler函数只能被对应的checker函数调用*/
+/*
+ * 初始化阶段处理函数，handler函数只能被对应的checker函数调用。在11个处理阶段中，只有
+ * 下面的7个阶段可以由第三方http模块介入，而其余4个阶段由于不能由第三方http模块介入，
+ * 所以也就不需要初始化阶段处理函数
+ */
 static ngx_int_t
 ngx_http_init_phases(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
 {
@@ -461,9 +466,21 @@ ngx_http_init_phase_handlers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
     cmcf->phase_engine.server_rewrite_index = (ngx_uint_t) -1;
     cmcf->phase_engine.location_rewrite_index = (ngx_uint_t) -1;
     find_config_index = 0;
+
+    /*
+     * 对于这11个处理阶段，有些阶段是必备的，比如NGX_HTTP_FIND_CONFIG_PHASE阶段，有些阶段是可以选的，
+     * 比如NGX_HTTP_POST_ACCESS_PHASE和NGX_HTTP_POST_REWRITE_PHASE阶段，为什么说这两个阶段是可选的呢?
+     * 因为NGX_HTTP_POST_REWRITE_PHASE完全是为了NGX_HTTP_REWRITE_PHASE阶段服务的，因为如果没有任何模块
+     * 介入NGX_HTTP_REWRITE_PHASE阶段处理请求，那就没必要检测是否出现重定向死循环，那么NGX_HTTP_POST_REWRITE_PHASE
+     * 也就没有必要存在了，同理NGX_HTTP_POST_ACCESS_PHASE之于NGX_HTTP_ACCESS_PHASE阶段也是一个道理，
+     * 这个可以在ngx_http_init_phase_handlers()有体现.
+     * 如果NGX_HTTP_REWRITE_PHASE中的没有处理方法，则表示没有模块介入该阶段，也就不需要NGX_HTTP_POST_REWRITE_PHASE
+     * 如果NGX_HTTP_ACCESS_PHASE中的没有处理方法，则表示没有模块介入该阶段，也就不需要NGX_HTTP_POST_ACCESS_PHASE
+     */
     use_rewrite = cmcf->phases[NGX_HTTP_REWRITE_PHASE].handlers.nelts ? 1 : 0;
     use_access = cmcf->phases[NGX_HTTP_ACCESS_PHASE].handlers.nelts ? 1 : 0;
 
+    /* NGX_HTTP_FIND_CONFIG_PHASE阶段是必备的 */
     n = use_rewrite + use_access + cmcf->try_files + 1 /* find config phase */;
 
     for (i = 0; i < NGX_HTTP_LOG_PHASE; i++) {
@@ -476,16 +493,21 @@ ngx_http_init_phase_handlers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
         return NGX_ERROR;
     }
 
+    /* 将所有阶段的处理函数存放在cmcf->phase_engine.handlers数组中 */
     cmcf->phase_engine.handlers = ph;
     n = 0;
 
     for (i = 0; i < NGX_HTTP_LOG_PHASE; i++) {
-        h = cmcf->phases[i].handlers.elts;
+        h = cmcf->phases[i].handlers.elts;  //存放在cmcf->phase数组中的当前阶段的所有处理方法
 
         switch (i) {
 
         case NGX_HTTP_SERVER_REWRITE_PHASE:
             if (cmcf->phase_engine.server_rewrite_index == (ngx_uint_t) -1) {
+                /* 
+                 * server_rewrite_index为NGX_HTTP_SERVER_REWRITE_PHASE阶段的第一个处理方法
+                 * 在cmcf->phase_engine.handlers数组中的序号    
+                 */
                 cmcf->phase_engine.server_rewrite_index = n;
             }
             checker = ngx_http_core_rewrite_phase;
@@ -493,16 +515,28 @@ ngx_http_init_phase_handlers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
             break;
 
         case NGX_HTTP_FIND_CONFIG_PHASE:
+            /*
+             * find_config_index表示的就是NGX_HTTP_FIND_CONFIG_PHASE阶段的第一个处理方法
+             * 在cmcf->phase_engine.handlers数组中的序号
+             */
             find_config_index = n;
 
             ph->checker = ngx_http_core_find_config_phase;
-            n++;
-            ph++;
+            n++;  // 虽然这个阶段不允许http模块介入处理，但在cmcf->phase_engine.handlers还是要占一位
+            ph++;  // cmcf->phase_engine.handlers数组中下一个未使用的位置
 
+            /*
+             * 这个阶段不允许http模块介入，所以不往下执行向cmcf->phase_engine.handlers数组中
+             * 添加自定义处理方法的步骤
+             */
             continue;
 
         case NGX_HTTP_REWRITE_PHASE:
             if (cmcf->phase_engine.location_rewrite_index == (ngx_uint_t) -1) {
+                /* 
+                 * location_rewrite_index为NGX_HTTP_REWRITE_PHASE阶段的第一个处理方法
+                 * 在cmcf->phase_engine.handlers数组中的序号    
+                 */
                 cmcf->phase_engine.location_rewrite_index = n;
             }
             checker = ngx_http_core_rewrite_phase;
@@ -512,11 +546,15 @@ ngx_http_init_phase_handlers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
         case NGX_HTTP_POST_REWRITE_PHASE:
             if (use_rewrite) {
                 ph->checker = ngx_http_core_post_rewrite_phase;
-                ph->next = find_config_index;
-                n++;
-                ph++;
+                ph->next = find_config_index;  // 下一个处理阶段是NGX_HTTP_FIND_CONFIG_PHASE，因为重定向
+                n++;  // 虽然这个阶段不允许http模块介入处理，但在cmcf->phase_engine.handlers还是要占一位
+                ph++; // cmcf->phase_engine.handlers数组中下一个未使用的位置
             }
 
+            /*
+             * 这个阶段不允许http模块介入，所以不往下执行向cmcf->phase_engine.handlers数组中
+             * 添加自定义处理方法的步骤
+             */
             continue;
 
         case NGX_HTTP_ACCESS_PHASE:
@@ -525,21 +563,31 @@ ngx_http_init_phase_handlers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
             break;
 
         case NGX_HTTP_POST_ACCESS_PHASE:
+            /* use_access表明有模块介入了NGX_HTTP_ACCESS_PHASE，因此本阶段也是需要的 */
             if (use_access) {
-                ph->checker = ngx_http_core_post_access_phase;
-                ph->next = n;
-                ph++;
+                ph->checker = ngx_http_core_post_access_phase; // 直接指定checker方法
+                ph->next = n;  // 为什么下一个处理阶段是自身呢?
+                ph++; // cmcf->phase_engine.handlers数组中下一个未使用的位置
             }
 
+            /*
+             * 这个阶段不允许http模块介入，所以不往下执行向cmcf->phase_engine.handlers数组中
+             * 添加自定义处理方法的步骤
+             */
             continue;
 
         case NGX_HTTP_TRY_FILES_PHASE:
+            /* cmcf->try_files表明配置了try_files指令，也就有了这个阶段 */
             if (cmcf->try_files) {
                 ph->checker = ngx_http_core_try_files_phase;
                 n++;
                 ph++;
             }
 
+            /*
+             * 这个阶段不允许http模块介入，所以不往下执行向cmcf->phase_engine.handlers数组中
+             * 添加自定义处理方法的步骤
+             */
             continue;
 
         case NGX_HTTP_CONTENT_PHASE:
@@ -550,13 +598,23 @@ ngx_http_init_phase_handlers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
             checker = ngx_http_core_generic_phase;
         }
 
+        /* 
+         * n的值存放的是到目前处理阶段为止，所有处理阶段中的处理方法的数目总和，同时也是当前处理阶段的下一个
+         * 处理阶段的第一个处理方法在cmcf->phase_engine.handlers数组中的序号
+         */
         n += cmcf->phases[i].handlers.nelts;
 
+        /* 将当前处理阶段中的所有处理方法逆序存放到cmcf->phase_engine.handlers数组中 */
         for (j = cmcf->phases[i].handlers.nelts - 1; j >=0; j--) {
             ph->checker = checker;
             ph->handler = h[j];
+
+            /* 
+             * 将要执行的下一个处理阶段的序号，也就是下一个处理阶段第一个处理方法在
+             * cmcf->phase_engine.handlers数组中的序号
+             */
             ph->next = n;
-            ph++;
+            ph++;  // cmcf->phase_engine.handlers数组中下一个未使用的位置
         }
     }
 
@@ -575,17 +633,27 @@ ngx_http_merge_servers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
     ngx_http_core_srv_conf_t   **cscfp;
 
     cscfp = cmcf->servers.elts;
+
+    /* 这个ctx是http{}块下的全局ngx_http_conf_ctx_t结构体 */
     ctx = (ngx_http_conf_ctx_t *) cf->ctx;
     saved = *ctx;
     rv = NGX_CONF_OK;
 
+    /* 遍历该http{}块内的所有server配置块的ngx_http_core_srv_conf_t结构体 */
     for (s = 0; s < cmcf->servers.nelts; s++) {
 
         /* merge the server{}s' srv_conf's */
-
+        /* ctx->srv_conf将指向所有http模块产生的server相关的srv级别的配置项结构体 */
         ctx->srv_conf = cscfp[s]->ctx->srv_conf;
 
+        /* 如果当前模块实现了merge_srv_conf方法 */
         if (module->merge_srv_conf) {
+
+            /*
+             * 在这里合并配置项时，saved.srv_conf[ctx_index]参数是当前http模块在http{}
+             * 块下有create_srv_conf方法创建的结构体，而cscfp[s]->ctx->srv_conf[ctx_index]
+             * 参数则是在解析server{}块下由create_srv_conf方法产生的结构体
+             */
             rv = module->merge_srv_conf(cf, saved.srv_conf[ctx_index],
                                         cscfp[s]->ctx->srv_conf[ctx_index]);
             if (rv != NGX_CONF_OK) {
@@ -593,12 +661,20 @@ ngx_http_merge_servers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
             }
         }
 
+        /* 如果当前http模块实现了merge_loc_conf方法 */
         if (module->merge_loc_conf) {
 
             /* merge the server{}'s loc_conf */
 
+            /*
+             * cscfp[s]->ctx->loc_conf这个动态数组中的成员都是由server{}块下的所有http
+             * 模块的create_loc_conf方法创建的结构体指针
+             */
             ctx->loc_conf = cscfp[s]->ctx->loc_conf;
 
+            /*
+             * 首先将http{}块下的main级别与server{}块下srv级别的location相关的结构体合并
+             */
             rv = module->merge_loc_conf(cf, saved.loc_conf[ctx_index],
                                         cscfp[s]->ctx->loc_conf[ctx_index]);
             if (rv != NGX_CONF_OK) {
@@ -607,8 +683,16 @@ ngx_http_merge_servers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
 
             /* merge the locations{}' loc_conf's */
 
+            /*
+             * clcf是server块下的ngx_http_core_module模块使用create_loc_conf方法产生的
+             * ngx_http_core_loc_conf_t结构体，其中的locations成员以双向链表方法关联
+             * 所有属于当前server{}块下的location块。
+             */
             clcf = cscfp[s]->ctx->loc_conf[ngx_http_core_module.ctx_index];
 
+            /*
+             * 将server{}块与其所包含的location{}块下的结构体进行合并
+             */
             rv = ngx_http_merge_locations(cf, clcf->locations,
                                           cscfp[s]->ctx->loc_conf,
                                           module, ctx_index);
@@ -625,7 +709,7 @@ failed:
     return rv;
 }
 
-
+/*合并location相关的配置项*/
 static char *
 ngx_http_merge_locations(ngx_conf_t *cf, ngx_queue_t *locations,
     void **loc_conf, ngx_http_module_t *module, ngx_uint_t ctx_index)
@@ -636,13 +720,20 @@ ngx_http_merge_locations(ngx_conf_t *cf, ngx_queue_t *locations,
     ngx_http_core_loc_conf_t   *clcf;
     ngx_http_location_queue_t  *lq;
 
+    /*
+     * 如果locations链表为空，说明当前server块下没有location块。
+     */
     if (locations == NULL) {
         return NGX_CONF_OK;
     }
 
+    /*
+     * 此时cf->ctx中存放的是解析server{}块时产生的ngx_http_conf_ctx_t对象
+     */
     ctx = (ngx_http_conf_ctx_t *) cf->ctx;
     saved = *ctx;
 
+    /* 遍历locations双向链表 */
     for (q = ngx_queue_head(locations);
          q != ngx_queue_sentinel(locations);
          q = ngx_queue_next(q))
@@ -650,14 +741,20 @@ ngx_http_merge_locations(ngx_conf_t *cf, ngx_queue_t *locations,
         lq = (ngx_http_location_queue_t *) q;
 
         clcf = lq->exact ? lq->exact : lq->inclusive;
+        /* clcf->loc_conf保存着解析当前location时产生的所有http模块使用create_loc_conf方法产生的结构体指针 */
         ctx->loc_conf = clcf->loc_conf;
 
+        /* 
+         * 调用merge_loc_conf方法合并srv、loc级别的location相关的配置项，其中loc_conf[ctx_index]
+         * 是srv级别的location相关的配置项
+         */
         rv = module->merge_loc_conf(cf, loc_conf[ctx_index],
                                     clcf->loc_conf[ctx_index]);
         if (rv != NGX_CONF_OK) {
             return rv;
         }
 
+        /* 因为location可以嵌套，所以接着合并当前location和其下嵌套的location之间的配置项 */
         rv = ngx_http_merge_locations(cf, clcf->locations, clcf->loc_conf,
                                       module, ctx_index);
         if (rv != NGX_CONF_OK) {
