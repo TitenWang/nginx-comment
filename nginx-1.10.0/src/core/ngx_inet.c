@@ -623,7 +623,7 @@ ngx_parse_unix_domain_url(ngx_pool_t *pool, ngx_url_t *u)
 #endif
 }
 
-
+/*listen ip:port，ip有可能是通配符，"*"，即listen *:port，不存在listen 192.168.1.*:port这种类似形式*/
 static ngx_int_t
 ngx_parse_inet_url(ngx_pool_t *pool, ngx_url_t *u)
 {

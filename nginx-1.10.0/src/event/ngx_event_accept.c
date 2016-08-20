@@ -226,6 +226,12 @@ ngx_event_accept(ngx_event_t *ev)  //ÕâÀïµÄevÊÇÔÚngx_event_process_initº¯ÊýÖÐ¼àÌ
 
         c->socklen = socklen;
         c->listening = ls;
+        /*
+         * ´ÓÏÂÃæµÄ¸³Öµ¿ÉÒÔ¿´µ½£¬µ±¿Í»§¶ËÓë·þÎñ¶ËµÄÁ¬½Ó½¨Á¢ºó£¬ÊÇÖ±½Ó°Ñ¼àÌý¶ÔÏóµÄµØÖ·ÐÅÏ¢¸³Öµ¸øÁË
+         * ÐÂ½¨Á¢µÄÁ¬½Ó¶ÔÏóÖÐµÄ¡£Èç¹ûlistenÅäÖÃÃüÁîÖÐµÄipÊÇÍ¨Åä·û£¬Èçlisten *:port£¬ÄÇÃ´ÆäÖÐµÄip
+         * »áÒÔ"0.0.0.0"´úÌæ£¬ËùÒÔÔÚngx_http_init_connection()ÖÐµÄngx_connection_local_sockaddr()
+         * ÖÐ»áÒÔÅÐ¶Ïc->local_sockaddr.sin_addr.s_addrÎª0À´ÅÐ¶ÏÊÇ·ñÊÇÎ´Ö¸¶¨ipµÄÇé¿ö¡£
+         */
         c->local_sockaddr = ls->sockaddr;
         c->local_socklen = ls->socklen;
 

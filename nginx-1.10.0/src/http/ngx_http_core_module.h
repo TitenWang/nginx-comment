@@ -214,7 +214,7 @@ typedef struct {
     ngx_flag_t                  merge_slashes;
     ngx_flag_t                  underscores_in_headers;
 
-    unsigned                    listen:1;
+    unsigned                    listen:1;  // server配置块中有设置了listen配置命令
 #if (NGX_PCRE)
     unsigned                    captures:1;
 #endif
@@ -245,8 +245,20 @@ typedef struct {
 
 struct ngx_http_addr_conf_s {
     /* the default server configuration for this address:port */
-    ngx_http_core_srv_conf_t  *default_server;
+    /*
+     * 为什么对于一个ip:port需要设置默认的server呢?
+     * 报文的收发是通过ip地址来确定的，所以如果一个ip:port有多个server都在监听，
+     * 那么在请求的初始阶段是分辨不出来这个请求对应的是哪个server的，所以需要有
+     * 一个默认的server对这个ip:port上的报文先进行一般性的处理(接收请求行)，等
+     * 解析到请求行或者请求头中的host后，Nginx会用这个字段的值去获取此次请求的
+     * 真正server，并让该server接管请求的后续处理
+     */
+    ngx_http_core_srv_conf_t  *default_server;  // ip:port的默认server
 
+    /*
+     * 如果ip:port有多个server同时监听，那么监听这个ip:port的所有server的server names会进行hash，
+     * 并将得到的hash表存放在virtual_names，这个用于用于获取请求真正对应的server配置块
+     */
     ngx_http_virtual_names_t  *virtual_names;
 
 #if (NGX_HTTP_SSL)
@@ -260,8 +272,8 @@ struct ngx_http_addr_conf_s {
 
 
 typedef struct {
-    in_addr_t                  addr;
-    ngx_http_addr_conf_t       conf;
+    in_addr_t                  addr;  //ip:port信息
+    ngx_http_addr_conf_t       conf;  //监听则合格ip:port的一些server信息
 } ngx_http_in_addr_t;
 
 
@@ -284,7 +296,8 @@ typedef struct {
 
 typedef struct {
     ngx_int_t                  family;
-    in_port_t                  port;
+    in_port_t                  port;  // 监听的端口
+    /*addrs中存放的就是不同的server监听同一个port，但不同ip的地址*/
     ngx_array_t                addrs;     /* array of ngx_http_conf_addr_t */
 } ngx_http_conf_port_t;
 

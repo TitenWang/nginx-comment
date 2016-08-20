@@ -953,6 +953,13 @@ ngx_event_process_init(ngx_cycle_t *cycle)
         }
 
         /*将监听连接的读事件添加到事件驱动模块中*/
+        /*
+         * 监听套接口对象的ngx_listening_的监听socket对应的连接的读事件是以水平触发方式加入到epoll
+         * 中的，因为在默认情况下，epoll对于某个描述符来说默认是以水平触发方式工作的，除非显示
+         * 指明是边缘触发方式，在这里，调用ngx_add_event(rev, NGX_READ_EVENT, 0)就是水平方式的。
+         * 连接建立之后的客户端与服务端交互的socket对应的连接的读写事件才是以边缘触发方式加入到epoll
+         * 中的，具体见ngx_event_accept()中的ngx_add_conn()函数
+         */
         if (ngx_add_event(rev, NGX_READ_EVENT, 0) == NGX_ERROR) {
             return NGX_ERROR;
         }

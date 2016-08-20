@@ -3040,7 +3040,7 @@ ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
 #else
         sin->sin_port = htons((getuid() == 0) ? 80 : 8000);
 #endif
-        sin->sin_addr.s_addr = INADDR_ANY;
+        sin->sin_addr.s_addr = INADDR_ANY; // 0.0.0.0。表示不确定地址或所有地址、任意地址
 
         lsopt.socklen = sizeof(struct sockaddr_in);
 
@@ -3967,7 +3967,17 @@ ngx_http_core_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     return NGX_CONF_OK;
 }
 
+/*
+ * 当Nginx的http配置块解析完后，http块内的所有server中的监听套接口信息就被收集起来了，先按照port端口分类
+ * 形成数组存储在cmcf->ports中，然后再在每一个port内按照ip地址分类形成数组存储在port->addrs中，也就是一个
+ * [port, addr]的二维数组。另外，一个[port, addr]可以对应多个server配置块，也就是说多个server块内可以监听
+ * 同一个ip:port,但是对应的server配置块多少并不会影响到监听套接口的创建，因为创建套接口依赖的是[port, addr]，
+ * 并不是他对应的server配置块，具体见ngx_http_init_listening()。
+ */
 
+/*
+ * listen命令解析回调函数
+ */
 static char *
 ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -3978,9 +3988,9 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_uint_t              n;
     ngx_http_listen_opt_t   lsopt;
 
-    cscf->listen = 1;
+    cscf->listen = 1;  // 配置了listen命令标志位置位
 
-    value = cf->args->elts;
+    value = cf->args->elts;  // cf->args存储着命令及其参数
 
     ngx_memzero(&u, sizeof(ngx_url_t));
 
@@ -3988,6 +3998,7 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     u.listen = 1;
     u.default_port = 80;
 
+    /* 解析ip:port */
     if (ngx_parse_url(cf->pool, &u) != NGX_OK) {
         if (u.err) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
@@ -4000,6 +4011,10 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     ngx_memzero(&lsopt, sizeof(ngx_http_listen_opt_t));
 
+    /* 
+     * 将解析出来的sockaddr存储到lsopt中，lsopt这个局部变量的值后续会存储到cmcf->port->addrs.opt中，具体赋值见
+     * ngx_http_add_address()函数
+     */
     ngx_memcpy(&lsopt.u.sockaddr, u.sockaddr, u.socklen);
 
     lsopt.socklen = u.socklen;
@@ -4020,6 +4035,10 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     (void) ngx_sock_ntop(&lsopt.u.sockaddr, lsopt.socklen, lsopt.addr,
                          NGX_SOCKADDR_STRLEN, 1);
 
+    /*
+     * 继续读取listen命令的参数，并将参数值转换后设置到lsopt对应的成员中，lsopt的内容最终会赋值到
+     * cmcf->ports->addrs.opt中，具体见ngx_http_add_address()函数
+     */
     for (n = 2; n < cf->args->nelts; n++) {
 
         if (ngx_strcmp(value[n].data, "default_server") == 0
@@ -4327,6 +4346,12 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    /*
+     * 程序执行到这里表明listen配置命令已经解析读取完毕，并将参数内容设置到了lsopt中，接下来
+     * 就是要将该server块listen命令中监听的ip:port收集起来。在Nginx中是如何管理的呢?Nginx是通过
+     * 一个[port, addr]的二维数组将所有的server块中监听的ip和port组织起来的，存放在了全局唯一的
+     * cmcf->ports中的，这样，当http块解析完毕后，所有server块的listen配置就被统一管理起来了。
+     */
     if (ngx_http_add_listen(cf, cscf, &lsopt) == NGX_OK) {
         return NGX_CONF_OK;
     }
@@ -4334,7 +4359,9 @@ ngx_http_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return NGX_CONF_ERROR;
 }
 
-
+/*
+ * server_name命令回调函数
+ */
 static char *
 ngx_http_core_server_name(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -4365,6 +4392,10 @@ ngx_http_core_server_name(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                                &value[i]);
         }
 
+        /* 
+         * 从cscf->server_names数组中获取一个元素用来存储server_names命令的一个参数。
+         * 因为server_names命令后面可以跟多个参数，如server_names www.baid0.com www.baidu1.com ...
+         */
         sn = ngx_array_push(&cscf->server_names);
         if (sn == NULL) {
             return NGX_CONF_ERROR;
@@ -4373,8 +4404,10 @@ ngx_http_core_server_name(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 #if (NGX_PCRE)
         sn->regex = NULL;
 #endif
+        /* server成员设置为当前server配置块 */
         sn->server = cscf;
 
+        /* 设置name成员，即server块的host */
         if (ngx_strcasecmp(value[i].data, (u_char *) "$hostname") == 0) {
             sn->name = cf->cycle->hostname;
 

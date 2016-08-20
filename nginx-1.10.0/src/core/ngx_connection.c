@@ -36,6 +36,7 @@ ngx_create_listening(ngx_conf_t *cf, void *sockaddr, socklen_t socklen)
     struct sockaddr  *sa;
     u_char            text[NGX_SOCKADDR_STRLEN];
 
+    /* 从cf->cycle->listening中获取一个监听对象 */
     ls = ngx_array_push(&cf->cycle->listening);
     if (ls == NULL) {
         return NULL;
@@ -50,6 +51,7 @@ ngx_create_listening(ngx_conf_t *cf, void *sockaddr, socklen_t socklen)
 
     ngx_memcpy(sa, sockaddr, socklen);
 
+    /*设置监听的ip地址和port*/
     ls->sockaddr = sa;
     ls->socklen = socklen;
 
@@ -83,9 +85,11 @@ ngx_create_listening(ngx_conf_t *cf, void *sockaddr, socklen_t socklen)
 
     ngx_memcpy(ls->addr_text.data, text, len);
 
+    /* 这个时候的监听socket fd仍为无效，因为只有等到调用socket、bind、listen之后这个fd才有效 */
     ls->fd = (ngx_socket_t) -1;
     ls->type = SOCK_STREAM;
 
+    /* 下面这些信息会设置为从listen配置项中解析到的信息，见ngx_http_add_listening() */
     ls->backlog = NGX_LISTEN_BACKLOG;
     ls->rcvbuf = -1;
     ls->sndbuf = -1;
@@ -1354,6 +1358,7 @@ ngx_close_idle_connections(ngx_cycle_t *cycle)
 }
 
 
+/* 在ip地址存在通配符的情况下，需要获取触发某次请求的真正ip地址 */
 ngx_int_t
 ngx_connection_local_sockaddr(ngx_connection_t *c, ngx_str_t *s,
     ngx_uint_t port)
@@ -1369,6 +1374,7 @@ ngx_connection_local_sockaddr(ngx_connection_t *c, ngx_str_t *s,
 
     addr = 0;
 
+    /* c->local_socklen 不为0直接获取此次请求的ip地址信息*/
     if (c->local_socklen) {
         switch (c->local_sockaddr->sa_family) {
 
@@ -1390,21 +1396,24 @@ ngx_connection_local_sockaddr(ngx_connection_t *c, ngx_str_t *s,
 #endif
 
         default: /* AF_INET */
-            sin = (struct sockaddr_in *) c->local_sockaddr;
+            sin = (struct sockaddr_in *) c->local_sockaddr;  // 获取此次请求的ip地址信息
             addr = sin->sin_addr.s_addr;
             break;
         }
     }
 
+    /* addr == 0说明触发这个请求的是ip中有通配符情况，在这种情况下ip地址用"0.0.0.0"代替的，此时addr == 0 */
     if (addr == 0) {
 
         len = NGX_SOCKADDRLEN;
 
+        /* 利用socket描述符fd获取触发此次请求的本机ip地址 */
         if (getsockname(c->fd, (struct sockaddr *) &sa, &len) == -1) {
             ngx_connection_error(c, ngx_socket_errno, "getsockname() failed");
             return NGX_ERROR;
         }
 
+        /* 将触发此次请求的ip地址存放在c->local_sockaddr中 */
         c->local_sockaddr = ngx_palloc(c->pool, len);
         if (c->local_sockaddr == NULL) {
             return NGX_ERROR;

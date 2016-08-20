@@ -218,6 +218,11 @@ ngx_http_init_connection(ngx_connection_t *c)
 
     port = c->listening->servers;
 
+    /*
+     * port->naddrs > 1表明监听该端口的ip地址有多个并且其中有通配符，由于有通配符，所以监听这个端口的所有
+     * ip地址共用一个监听对象ngx_listening_t。由于有多个ip地址共用一个监听对象，所以要找出此次请求对应的
+     * 真正ip地址，这个就是ngx_connection_local_sockaddr()函数所要做的工作。
+     */
     if (port->naddrs > 1) {
 
         /*
@@ -226,11 +231,13 @@ ngx_http_init_connection(ngx_connection_t *c)
          * is required to determine a server address
          */
 
+        /* 在ip地址存在通配符的情况下，需要获取触发某次请求的真正ip地址 */
         if (ngx_connection_local_sockaddr(c, NULL, 0) != NGX_OK) {
             ngx_http_close_connection(c);
             return;
         }
 
+        /* 通过ngx_connection_local_sockaddr()函数，已经获取了真正ip地址信息，并存放在了c->local_sockaddr */
         switch (c->local_sockaddr->sa_family) {
 
 #if (NGX_HAVE_INET6)
@@ -253,24 +260,39 @@ ngx_http_init_connection(ngx_connection_t *c)
 #endif
 
         default: /* AF_INET */
-            sin = (struct sockaddr_in *) c->local_sockaddr;
+            sin = (struct sockaddr_in *) c->local_sockaddr;  // 触发此次请求的真正ip地址
 
             addr = port->addrs;
 
             /* the last address is "*" */
 
+            /*
+             * 通过上面的ngx_connection_local_sockaddr()函数，已经找到了此次请求的真正ip地址
+             * 所以现在要遍历监听该端口的所有ip地址(包括存在通配符的)，用此次请求的真正ip去匹配,
+             * 找到此次请求对应的配置信息，如默认server等信息，存放在addr.conf中。
+             * 如果下面的循环结束并不是break导致的，说明此次请求的ip地址在一开始就是不确定的，也就
+             * 是listen的时候是通配符的情况。所以循环结束后就用通配符(port->addrs.addr = "0.0.0.0")
+             * 对应的conf设置给了当前的请求(在ngx_http_optimize_servers()函数中已经对地址信息进行了
+             * 排序，通配符的地址信息排到了最后)
+             */
             for (i = 0; i < port->naddrs - 1; i++) {
                 if (addr[i].addr == sin->sin_addr.s_addr) {
                     break;
                 }
             }
 
+            /* 找到了此次请求对应的ip地址的配置信息，进行赋值，用于后续处理请求 */
             hc->addr_conf = &addr[i].conf;
 
             break;
         }
 
     } else {
+        /*
+         * 进入else分支，表明监听该端口的所有ip地址中不存在通配符情况，在这种情况下，有多少个ip
+         * 就有多少个监听对象ngx_listening_t。对于这种情况，就可以直接获取到ip地址信息，进而获取到
+         * 此次请求对应的配置信息，如默认server等。
+         */
 
         switch (c->local_sockaddr->sa_family) {
 
@@ -282,13 +304,21 @@ ngx_http_init_connection(ngx_connection_t *c)
 #endif
 
         default: /* AF_INET */
-            addr = port->addrs;
+            addr = port->addrs;  // 此时只有一个ip地址对应这个监听对象
             hc->addr_conf = &addr[0].conf;
             break;
         }
     }
 
     /* the default server configuration for the address:port */
+    /*
+     * 为什么对于一个ip:port需要设置默认的server呢?
+     * 报文的收发是通过ip地址来确定的，所以如果一个ip:port有多个server都在监听，
+     * 那么在请求的初始阶段是分辨不出来这个请求对应的是哪个server的，所以需要有
+     * 一个默认的server对这个ip:port上的报文先进行一般性的处理(接收请求行)，等
+     * 解析到请求行或者请求头中的host后，Nginx会用这个字段的值去获取此次请求的
+     * 真正server，并让该server接管请求的后续处理
+     */
     hc->conf_ctx = hc->addr_conf->default_server->ctx;
 
     ctx = ngx_palloc(c->pool, sizeof(ngx_http_log_ctx_t));

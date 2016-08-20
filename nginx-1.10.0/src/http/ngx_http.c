@@ -1143,7 +1143,13 @@ inclusive:
     return node;
 }
 
-
+/*
+ * 当Nginx的http配置块解析完后，http块内的所有server中的监听套接口信息就被收集起来了，先按照port端口分类
+ * 形成数组存储在cmcf->ports中，然后再在每一个port内按照ip地址分类形成数组存储在port->addrs中，也就是一个
+ * [port, addr]的二维数组。另外，一个[port, addr]可以对应多个server配置块，也就是说多个server块内可以监听
+ * 同一个ip:port,但是对应的server配置块多少并不会影响到监听套接口的创建，因为创建套接口依赖的是[port, addr]，
+ * 并不是他对应的server配置块，具体见ngx_http_init_listening()。
+ */
 ngx_int_t
 ngx_http_add_listen(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
     ngx_http_listen_opt_t *lsopt)
@@ -1158,6 +1164,7 @@ ngx_http_add_listen(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
     struct sockaddr_in6        *sin6;
 #endif
 
+    /* 获取权益唯一的ngx_http_core_module模块的main_conf配置项结构体 */
     cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 
     if (cmcf->ports == NULL) {
@@ -1187,24 +1194,29 @@ ngx_http_add_listen(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
 
     default: /* AF_INET */
         sin = &lsopt->u.sockaddr_in;
-        p = sin->sin_port;
+        p = sin->sin_port;  // 获取listen配置项监听的port
         break;
     }
 
+    /* 遍历cmcf->ports中已经存在的port，看是否已经有server配置块监听了这个port */
     port = cmcf->ports->elts;
     for (i = 0; i < cmcf->ports->nelts; i++) {
 
+        /* 判断是否port已经被其他已经解析过的server监听了 */
         if (p != port[i].port || sa->sa_family != port[i].family) {
             continue;
         }
 
         /* a port is already in the port list */
-
         return ngx_http_add_addresses(cf, cscf, &port[i], lsopt);
     }
 
     /* add a port to the port list */
 
+    /* 
+     * 程序执行到这里表明在已经解析过的server中，并没有server监听了这个port，
+     * 所以需要在cmcf->ports数组中新增一个元素。
+     */
     port = ngx_array_push(cmcf->ports);
     if (port == NULL) {
         return NGX_ERROR;
@@ -1212,8 +1224,9 @@ ngx_http_add_listen(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
 
     port->family = sa->sa_family;
     port->port = p;
-    port->addrs.elts = NULL;
+    port->addrs.elts = NULL;  // port->addrs数组中存放的便是监听同一个port，但ip不同的地址。
 
+    /* 往这个新增的port中添加addrs地址信息 */
     return ngx_http_add_address(cf, cscf, port, lsopt);
 }
 
@@ -1242,6 +1255,7 @@ ngx_http_add_addresses(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
      * may fill some fields in inherited sockaddr struct's
      */
 
+    /* 获取listen配置指令监听的ip和port */
     sa = &lsopt->u.sockaddr;
 
     switch (sa->sa_family) {
@@ -1261,7 +1275,7 @@ ngx_http_add_addresses(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
 #endif
 
     default: /* AF_INET */
-        off = offsetof(struct sockaddr_in, sin_addr);
+        off = offsetof(struct sockaddr_in, sin_addr);  // 计算ip地址sin_addr在sockaddr_in中的偏移
         len = 4;
         break;
     }
@@ -1270,19 +1284,25 @@ ngx_http_add_addresses(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
 
     addr = port->addrs.elts;
 
+    /* 遍历监听这个port的所有地址 */
     for (i = 0; i < port->addrs.nelts; i++) {
 
+        /* 
+         * 判断这个listen监听的ip地址是否已经有其他server监听了，因为其他server监听了，
+         * 就会加入到ports->addrs中 
+         */
         if (ngx_memcmp(p, addr[i].opt.u.sockaddr_data + off, len) != 0) {
             continue;
         }
 
         /* the address is already in the address list */
-
+        /* 这个listen监听的ip地址已经有其他server监听过了，所以此时需要将这个server的信息放到addrs.servers中 */
         if (ngx_http_add_server(cf, cscf, &addr[i]) != NGX_OK) {
             return NGX_ERROR;
         }
 
         /* preserve default_server bit during listen options overwriting */
+        /* 获取这个监听的ip地址是否已经被其他server设置为default server的标志位 */
         default_server = addr[i].opt.default_server;
 
         proxy_protocol = lsopt->proxy_protocol || addr[i].opt.proxy_protocol;
@@ -1307,6 +1327,7 @@ ngx_http_add_addresses(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
 
         /* check the duplicate "default" server for this address:port */
 
+        /* lsopt->default_server等于1表明当前解析的这个server块被设置为了这个ip:port默认的server */
         if (lsopt->default_server) {
 
             if (default_server) {
@@ -1316,7 +1337,7 @@ ngx_http_add_addresses(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
             }
 
             default_server = 1;
-            addr[i].default_server = cscf;
+            addr[i].default_server = cscf;  // 将这个ip:port的默认的server设为当前server
         }
 
         addr[i].opt.default_server = default_server;
@@ -1333,6 +1354,10 @@ ngx_http_add_addresses(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
 
     /* add the address to the addresses list that bound to this port */
 
+    /*
+     * 程序执行到这里表明这个ip地址目前在已经解析过的server块中还没有被监听，所以这里
+     * 需要将这个ip地址信息添加到cmcf->ports数组中。
+     */
     return ngx_http_add_address(cf, cscf, port, lsopt);
 }
 
@@ -1341,7 +1366,6 @@ ngx_http_add_addresses(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
  * add the server address, the server names and the server core module
  * configurations to the port list
  */
-
 static ngx_int_t
 ngx_http_add_address(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
     ngx_http_conf_port_t *port, ngx_http_listen_opt_t *lsopt)
@@ -1375,6 +1399,7 @@ ngx_http_add_address(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
         return NGX_ERROR;
     }
 
+    /* 将之前解析到的listen配置项的信息赋值到具体的addr中，因为listen配置项是针对ip:port的 */
     addr->opt = *lsopt;
     addr->hash.buckets = NULL;
     addr->hash.size = 0;
@@ -1384,15 +1409,17 @@ ngx_http_add_address(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
     addr->nregex = 0;
     addr->regex = NULL;
 #endif
+    /* 如果有多个server监听同一个ip:port，那么第一个解析到的server会被当作是default server */
     addr->default_server = cscf;
-    addr->servers.elts = NULL;
+    addr->servers.elts = NULL;  /* addr->servers数组中存放的便是监听同一个ip:port的多个server的信息 */
 
+    /* 将监听这个ip:port的server信息存放到addr->servers数组中，因为可能有多个server会监听同一个ip:port */
     return ngx_http_add_server(cf, cscf, addr);
 }
 
 
 /* add the server core module configuration to the address:port */
-
+/* 将监听这个ip:port的server信息存放到addr->servers数组中，因为可能有多个server会监听同一个ip:port */
 static ngx_int_t
 ngx_http_add_server(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
     ngx_http_conf_addr_t *addr)
@@ -1419,6 +1446,7 @@ ngx_http_add_server(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
         }
     }
 
+    /* 将监听这个ip:port的server信息设置到addr->servers中收集起来 */
     server = ngx_array_push(&addr->servers);
     if (server == NULL) {
         return NGX_ERROR;
@@ -1429,7 +1457,18 @@ ngx_http_add_server(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
     return NGX_OK;
 }
 
-
+/*
+ * ngx_http_optimize_servers()这个函数主要作用如下:
+ *     1. 如果一个ip:port有多个server块同时监听，那么需要将监听这个ip:port的所有server的server_name进行hash，
+ * 之所以进行hash是为了后续处理请求的时候用于快速获取请求真正对应的server块。这个地方需要说明下: 就是在请求
+ * 的初期，具体就是在解析到请求头部的host字段之前，一直都是用监听这个ip:port的指定的default server来处理这个
+ * 这个请求的，等到解析到请求头中的host字段时，就会用host字段值去获取对应的server块，接着请求就不再使用默认
+ * server处理，而是用获取到的真正server块去处理。那为什么只有在ip:port有多个server监听的情况下才会将server_name
+ * 做hash，而只有一个server监听的情况下不用呢?原因就是如果ip:port只有一个server监听，那么这个server就是default
+ * server，那么就不用再去获取真正处理请求的server了，因为默认server就是真正的处理请求的server
+ *     2. 因为在解析所有server的时候已经将监听的ip:port都收集起来了，所以接下来需要创建和ip:port对应起来的
+ * 用于事件模块建链的监听对象，即ngx_listening_t对象。
+ */
 static ngx_int_t
 ngx_http_optimize_servers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
     ngx_array_t *ports)
@@ -1442,9 +1481,11 @@ ngx_http_optimize_servers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
         return NGX_OK;
     }
 
+    /* ports数组中存放的就是http配置块下所有server块监听的ip:port集合 */
     port = ports->elts;
     for (p = 0; p < ports->nelts; p++) {
 
+        /* 将同一个port的所有addr进行排序，通过这个排序， 通配符的地址信息排到的最后*/
         ngx_sort(port[p].addrs.elts, (size_t) port[p].addrs.nelts,
                  sizeof(ngx_http_conf_addr_t), ngx_http_cmp_conf_addrs);
 
@@ -1453,21 +1494,24 @@ ngx_http_optimize_servers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
          * configuration as a default server for given address:port
          */
 
+        /* 遍历同一个port下的所有监听的ip地址 */
         addr = port[p].addrs.elts;
         for (a = 0; a < port[p].addrs.nelts; a++) {
-			/*有多个server监听同一个ip:port*/
+			/* 有多个server监听同一个ip:port */
             if (addr[a].servers.nelts > 1
 #if (NGX_PCRE)
                 || addr[a].default_server->captures
 #endif
                )
             {
+                /* 将监听用一个ip:port的多个server块的名字进行hash处理，原因在函数开头已经有说明 */
                 if (ngx_http_server_names(cf, cmcf, &addr[a]) != NGX_OK) {
                     return NGX_ERROR;
                 }
             }
         }
 
+        /* 用解析server块中listen配置项得到的信息初始化cycle->listening中的监听对象 */
         if (ngx_http_init_listening(cf, &port[p]) != NGX_OK) {
             return NGX_ERROR;
         }
@@ -1476,7 +1520,7 @@ ngx_http_optimize_servers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
     return NGX_OK;
 }
 
-
+/* 将server配置块中的server_names做hash处理，构造hash表 */
 static ngx_int_t
 ngx_http_server_names(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
     ngx_http_conf_addr_t *addr)
@@ -1508,6 +1552,7 @@ ngx_http_server_names(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
 
     cscfp = addr->servers.elts;
 
+    /* 遍历监听同一个ip:port的所有server块，将名字进行hash处理 */
     for (s = 0; s < addr->servers.nelts; s++) {
 
         name = cscfp[s]->server_names.elts;
@@ -1521,6 +1566,10 @@ ngx_http_server_names(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
             }
 #endif
 
+            /* 
+             * 这里以server_name作为key， server配置块作为value进行hash，后续在解析到请求
+             * 头中的host字段时，就会用这个host求hash后到hash表中去获取server配置块
+             */
             rc = ngx_hash_add_key(&ha, &name[n].name, name[n].server,
                                   NGX_HASH_WILDCARD_KEY);
 
@@ -1549,6 +1598,11 @@ ngx_http_server_names(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
     hash.name = "server_names_hash";
     hash.pool = cf->pool;
 
+    /* 
+     * 下面的三个if语句会分别对三种类型的server names进行hash初始化，并将结果设置到
+     * 当前这个ip地址对象ports->addrs的hash、wc_head、wc_tail中
+     */
+    
     if (ha.keys.nelts) {
         hash.hash = &addr->hash;
         hash.temp_pool = NULL;
@@ -1678,7 +1732,14 @@ ngx_http_cmp_dns_wildcards(const void *one, const void *two)
     return ngx_dns_strcmp(first->key.data, second->key.data);
 }
 
-
+/* 用解析server块中listen配置项得到的信息初始化cycle->listening中的监听对象 */
+/*
+ * 关于创建cycle->listening中的监听对象，需要注意如下:
+ *   1.如果某个端口上有任意数目ip的listen配置，即有通配符的情况，那么在该端口上只会创建一个监听对象ngx_listening_t
+ * 不管是否还有其他ip在该端口上有listen配置，在后面创建监听对象时也只会创建一个，例如:server { listen 127.0.0.1:80}
+ * server {listen 80}。而如果某个端口上面所有监听的ip地址没有通配符，那么一个ip:port就会创建一个监听对象，例如:
+ * server {listen 192.168.0.1:80} server {listen 192.168.1.1:80}就会创建两个ngx_listening_t.
+ */
 static ngx_int_t
 ngx_http_init_listening(ngx_conf_t *cf, ngx_http_conf_port_t *port)
 {
@@ -1697,6 +1758,7 @@ ngx_http_init_listening(ngx_conf_t *cf, ngx_http_conf_port_t *port)
      * implicit bindings go, and wildcard binding is in the end.
      */
 
+    /* 判断监听这个port的地址中是否有通配符的情况 */
     if (addr[last - 1].opt.wildcard) {
         addr[last - 1].opt.bind = 1;
         bind_wildcard = 1;
@@ -1714,6 +1776,7 @@ ngx_http_init_listening(ngx_conf_t *cf, ngx_http_conf_port_t *port)
             continue;
         }
 
+        /* 创建并初始化一个监听对象ngx_listening_t */
         ls = ngx_http_add_listening(cf, &addr[i]);
         if (ls == NULL) {
             return NGX_ERROR;
@@ -1724,6 +1787,10 @@ ngx_http_init_listening(ngx_conf_t *cf, ngx_http_conf_port_t *port)
             return NGX_ERROR;
         }
 
+        /* 
+         * ls->servers中记录的是监听这个ip:port的所有server的信息，因为开始处理用户请求之后就不会在使用
+         * cmcf->ports->addrs中的信息，所以需要将其中记录的一些有用的信息存放到ls->servers中
+         */
         ls->servers = hport;
 
         hport->naddrs = i + 1;
@@ -1763,6 +1830,7 @@ ngx_http_add_listening(ngx_conf_t *cf, ngx_http_conf_addr_t *addr)
     ngx_http_core_loc_conf_t  *clcf;
     ngx_http_core_srv_conf_t  *cscf;
 
+    /* 创建一个监听对象ngx_listening_t */
     ls = ngx_create_listening(cf, &addr->opt.u.sockaddr, addr->opt.socklen);
     if (ls == NULL) {
         return NULL;
@@ -1770,8 +1838,10 @@ ngx_http_add_listening(ngx_conf_t *cf, ngx_http_conf_addr_t *addr)
 
     ls->addr_ntop = 1;
 
+    /* 新的tcp连接成功建立了后的处理方法 */
     ls->handler = ngx_http_init_connection;
 
+    /* 获取监听这个ip:port的默认server */
     cscf = addr->default_server;
     ls->pool_size = cscf->connection_pool_size;
     ls->post_accept_timeout = cscf->client_header_timeout;
@@ -1795,6 +1865,7 @@ ngx_http_add_listening(ngx_conf_t *cf, ngx_http_conf_addr_t *addr)
     }
 #endif
 
+    /* 下面开始将从listen配置指令中解析到的信息设置到监听对象中 */
     ls->backlog = addr->opt.backlog;
     ls->rcvbuf = addr->opt.rcvbuf;
     ls->sndbuf = addr->opt.sndbuf;
@@ -1854,7 +1925,16 @@ ngx_http_add_addrs(ngx_conf_t *cf, ngx_http_port_t *hport,
     for (i = 0; i < hport->naddrs; i++) {
 
         sin = &addr[i].opt.u.sockaddr_in;
+
+        /* addr.opt.u.sockaddr_in存放的便是监听这个port的某个ip地址的信息 */
         addrs[i].addr = sin->sin_addr.s_addr;
+        /* 
+         * 将监听这个ip:port的default server设置到ls->servers->addrs.conf.default_server中，
+         * 因为在接收到用户发来数据开始处理请求但还未解析出请求头部的host字段之前，会用
+         * ls->servers->addrs.conf.default_server来处理这个请求，即使这个请求的真正server并不是
+         * 这个默认server，那什么获取真正的server呢?当解析到host后，就会用host字段值去获取真正的server，
+         * 然后用真正的server处理这个请求
+         */
         addrs[i].conf.default_server = addr[i].default_server;
 #if (NGX_HTTP_SSL)
         addrs[i].conf.ssl = addr[i].opt.ssl;
@@ -1882,6 +1962,13 @@ ngx_http_add_addrs(ngx_conf_t *cf, ngx_http_port_t *hport,
             return NGX_ERROR;
         }
 
+        /* 
+         * 将在函数ngx_http_server_names()中构造的server name的hash表设置到ls->servers->addrs.conf.virtual_names中
+         * 在接收到用户发来数据处理请求但还未解析出请求头部的host字段之前，会用
+         * ls->servers->addrs.conf.default_server来处理这个请求，即使这个请求的真正server并不是
+         * 这个默认server，那什么获取真正的server呢?当解析到host后，就会用host字段值做hash到这个hash表中
+         * 去获取真正的server，然后用真正的server处理这个请求
+         */
         addrs[i].conf.virtual_names = vn;
 
         vn->names.hash = addr[i].hash;
