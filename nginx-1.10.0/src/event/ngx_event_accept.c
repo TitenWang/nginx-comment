@@ -258,6 +258,13 @@ ngx_event_accept(ngx_event_t *ev)  //ÕâÀïµÄevÊÇÔÚngx_event_process_initº¯ÊýÖÐ¼àÌ
             rev->ready = 1;
         }
 
+        /*
+         * deferred_accept±êÖ¾Î»Îª1£¬±íÊ¾ÐèÒªÑÓ³Ù½¨Á¢tcpÁ¬½Ó£¬¼´µÈµ½½ÓÊÕµ½¿Í»§¶Ë·¢À´µÄÊµ¼ÊÇëÇóÊý¾Ý
+         * Ö®ºó²Å»áaccept½¨Á¢Á¬½Ó¡£deferred_accept±êÖ¾Î»×î³õÊÇÔÚlistenÅäÖÃÖ¸ÁîÖÐÉèÖÃµÄ£¬¼´Èç¹ûlisten
+         * ÃüÁîÖÐÅäÖÃÁËdeferred_accept£¬Ôò¼àÌýÌ×½Ó¿Ú¶ÔÓ¦µÄÁ¬½Ó¶ÔÏóÖÐµÄ¶ÁÊÂ¼þµÄdeferred_accept²Å»áÖÃ1£¬
+         * ±íÊ¾ÔÚÕâ¸ö¼àÌýÌ×½Ó¿Ú½¨Á¢µÄsocket¶¼ÒªµÈµ½ÓÐÊý¾ÝÖ®ºó²Å»áaccept¡£´ËÊ±»á½«ÐÂ½¨Á¢µÄÁ¬½Ó¶ÔÓ¦µÄ
+         * ¶ÁÊÂ¼þµÄready±êÖ¾Î»ÖÃÎ»£¬±íÊ¾ÔÚÁ¬½Ó¶ÔÓ¦µÄÄÚºËÌ×½Ó×Ö»º³åÇøÒÑ¾­½ÓÊÕµ½ÓÃ»§·¢À´µÄÇëÇóÊý¾ÝÁË¡£
+         */
         if (ev->deferred_accept) {
             rev->ready = 1;
 #if (NGX_HAVE_KQUEUE)

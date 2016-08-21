@@ -337,7 +337,7 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
     ngx_event_process_posted(cycle, &ngx_posted_events);
 }
 
-
+/* 对应epoll来说，该函数会将对应的事件以边缘触发的方式加入到epoll中 */
 ngx_int_t
 ngx_handle_read_event(ngx_event_t *rev, ngx_uint_t flags)
 {
@@ -345,6 +345,7 @@ ngx_handle_read_event(ngx_event_t *rev, ngx_uint_t flags)
 
         /* kqueue, epoll */
 
+        /* NGX_CLEAR_EVENT表示边缘触发，如果要加入到epoll中的这个事件已经在epoll中就不会在加入了 */
         if (!rev->active && !rev->ready) {
             if (ngx_add_event(rev, NGX_READ_EVENT, NGX_CLEAR_EVENT)
                 == NGX_ERROR)

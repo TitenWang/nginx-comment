@@ -190,7 +190,14 @@ ngx_http_header_t  ngx_http_headers_in[] = {
     { ngx_null_string, 0, NULL }
 };
 
-
+/*
+ * 初始化连接，包括以下内容:
+ * 1. 从监听套接口对象中获取该连接对应的[port,ip]配置信息
+ * 2. 设置连接的读事件回调函数为ngx_http_wait_request_handler
+ * 3. 如果连接读事件的ready标志位为1，表示内核套接字缓冲区中有用户发来的数据，直接调用
+ *    ngx_http_wait_request_handler处理请求。
+ * 4. 如果连接读事件的ready标志位为0，则会将请求的读事件加入定时器和epoll中。
+ */
 void
 ngx_http_init_connection(ngx_connection_t *c)
 {
@@ -212,10 +219,12 @@ ngx_http_init_connection(ngx_connection_t *c)
         return;
     }
 
+    /* 将存储着连接对应的[port,ip]配置信息设置到连接的data成员中 */
     c->data = hc;
 
     /* find the server configuration for the address:port */
 
+    /*用于保存当前监听端口对应着的所有监听地址信息，每个监听地址(ip:port)包含着监听这个地址的所有server信息*/
     port = c->listening->servers;
 
     /*
@@ -338,8 +347,15 @@ ngx_http_init_connection(ngx_connection_t *c)
 
     c->log_error = NGX_ERROR_INFO;
 
+    /* 设置连接对应的读写事件的回调函数 */
     rev = c->read;
     rev->handler = ngx_http_wait_request_handler;
+
+    /*
+     * 设置当前连接写事件的处理方法handler为ngx_http_empty_handler，
+     * 该方法不执行任何实际操作，只记录日志；
+     * 因为处理请求的过程不需要write方法；
+     */
     c->write->handler = ngx_http_empty_handler;
 
 #if (NGX_HTTP_V2)
@@ -378,9 +394,14 @@ ngx_http_init_connection(ngx_connection_t *c)
         c->log->action = "reading PROXY protocol";
     }
 
+    /*
+     * rev->ready为1表示该连接对应的内核套接字缓冲区有已经接收到了客户端发来的请求内容
+     * 所以这里便开始处理用户请求了。
+     */
     if (rev->ready) {
         /* the deferred accept(), iocp */
 
+        /* ngx_use_accept_mutex表明使用了负载均衡，需要延后执行rev->handler() */
         if (ngx_use_accept_mutex) {
             ngx_post_event(rev, &ngx_posted_events);
             return;
@@ -390,16 +411,33 @@ ngx_http_init_connection(ngx_connection_t *c)
         return;
     }
 
+    /* 将新建立连接的读事件加入到定时器中，定时时长为post_accept_timeout */
     ngx_add_timer(rev, c->listening->post_accept_timeout);
     ngx_reusable_connection(c, 1);
 
+    /*
+     *     不理解的地方: 为什么在连接建立时已经将连接加入到了epoll中，此时还需要将该连接对应的
+     * 读事件加入到epoll中呢?
+     *     答: 这些将事件加入到加入epoll的函数实现中会判断这个事件之前是否已经在epoll中，如果
+     * 已经在epoll中就不会再重复加入了。
+     */
+
+    /*
+     * 将新建立连接的读事件加入到epoll中。
+     */
     if (ngx_handle_read_event(rev, 0) != NGX_OK) {
         ngx_http_close_connection(c);
         return;
     }
 }
 
-
+/* 首次接收到客户端发来的请求数据时，该函数会被调用 */
+/*
+ * 从ngx_http_init_connection()和ngx_http_wait_request_handler()中的实现可以看出http框架
+ * 并不会在连接建立成功之后就开始初始化请求，而是在这个连接对应的套接字缓冲区上确实接收到
+ * 了客户端发来的请求内容时才会进行初始化请求的操作(见ngx_http_wait_request_handler)，之所以
+ * 是为了减少不必要的内存消耗，减少了一个请求占用内存资源的时间
+ */
 static void
 ngx_http_wait_request_handler(ngx_event_t *rev)
 {
@@ -415,24 +453,34 @@ ngx_http_wait_request_handler(ngx_event_t *rev)
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http wait request handler");
 
+    /* 检查该事件是否已经超时，在ngx_http_init_connection()中已经将该事件加入了定时器中 */
     if (rev->timedout) {
         ngx_log_error(NGX_LOG_INFO, c->log, NGX_ETIMEDOUT, "client timed out");
         ngx_http_close_connection(c);
         return;
     }
 
+    /* 如果close为1，表示连接已经关闭了 */
     if (c->close) {
         ngx_http_close_connection(c);
         return;
     }
 
     hc = c->data;
+
+    /* 
+     * 获取处理请求用的server配置块信息(此时还是默认server的配置信息，后续在解析出请求头中的
+     * Host字段值后会重新获取真正的server配置信息，后续请求的处理都用这个server配置块信息，
+     * 需要重定位的情况会出现在一个ip:port被多个server同时监听时出现)。
+     */
     cscf = ngx_http_get_module_srv_conf(hc->conf_ctx, ngx_http_core_module);
 
     size = cscf->client_header_buffer_size;
 
+    /*c->buffer是用于接收、缓存客户端发来的字节流的缓冲区，*/
     b = c->buffer;
 
+    /* 如果当前缓冲区不存在，则创建该缓冲区并分配内存 */
     if (b == NULL) {
         b = ngx_create_temp_buf(c->pool, size);
         if (b == NULL) {
@@ -444,6 +492,7 @@ ngx_http_wait_request_handler(ngx_event_t *rev)
 
     } else if (b->start == NULL) {
 
+        /* 如果当前缓冲区已经存在但无内存，则为其分配内存 */
         b->start = ngx_palloc(c->pool, size);
         if (b->start == NULL) {
             ngx_http_close_connection(c);
@@ -455,15 +504,19 @@ ngx_http_wait_request_handler(ngx_event_t *rev)
         b->end = b->last + size;
     }
 
+    /* 调用Nginx封装的recv函数从套接字缓冲区中读取请求数据 */
     n = c->recv(c, b->last, size);
 
+    /* c->recv()函数返回NGX_AGAIN表示还没有接收到用户发来的请求数据 */
     if (n == NGX_AGAIN) {
 
+        /* 如果该事件不在定时器中，则加入到定时器中 */
         if (!rev->timer_set) {
             ngx_add_timer(rev, c->listening->post_accept_timeout);
             ngx_reusable_connection(c, 1);
         }
 
+        /* 加入到epoll中 */
         if (ngx_handle_read_event(rev, 0) != NGX_OK) {
             ngx_http_close_connection(c);
             return;
@@ -473,6 +526,7 @@ ngx_http_wait_request_handler(ngx_event_t *rev)
          * We are trying to not hold c->buffer's memory for an idle connection.
          */
 
+        /* 如果本次没有接收到客户端发来的请求，则释放之前申请的用于接收请求数据的内存 */
         if (ngx_pfree(c->pool, b->start) == NGX_OK) {
             b->start = NULL;
         }
@@ -480,17 +534,24 @@ ngx_http_wait_request_handler(ngx_event_t *rev)
         return;
     }
 
+    /* c->recv()函数返回NGX_ERROR表示连接出错 */
     if (n == NGX_ERROR) {
         ngx_http_close_connection(c);
         return;
     }
 
+    /* c->recv()函数返回0表示客户端已经关闭了主动关闭了连接，所以服务端也需要关闭该连接 */
     if (n == 0) {
         ngx_log_error(NGX_LOG_INFO, c->log, 0,
                       "client closed connection");
         ngx_http_close_connection(c);
         return;
     }
+
+    /* 
+     * 程序执行到这里表示已经接收到了客户端发来的请求数据，b->pos和b->last之间的内存
+     * 表示的就是为解析的字节流
+     */
 
     b->last += n;
 
@@ -519,17 +580,22 @@ ngx_http_wait_request_handler(ngx_event_t *rev)
 
     ngx_reusable_connection(c, 0);
 
+    /* 创建请求对象ngx_http_request_t并初始化其中的部分成员，并将其设置到c->data成员中 */
     c->data = ngx_http_create_request(c);
     if (c->data == NULL) {
         ngx_http_close_connection(c);
         return;
     }
 
+    /* 
+     * 已经接收到了客户端发来的请求数据，开始解析请求行，所以将读事件回调
+     * 设置为ngx_http_process_request_line
+     */
     rev->handler = ngx_http_process_request_line;
-    ngx_http_process_request_line(rev);
+    ngx_http_process_request_line(rev);  // 直接调用该函数处理请求行，因为上面已经接收到了客户端的请求数据
 }
 
-
+/* 创建请求对象 */
 ngx_http_request_t *
 ngx_http_create_request(ngx_connection_t *c)
 {
@@ -565,6 +631,9 @@ ngx_http_create_request(ngx_connection_t *c)
     r->signature = NGX_HTTP_MODULE;
     r->connection = c;
 
+    /*
+     * 在还未解析到请求头中的host字段之前，一直都用监听ip:port上的默认server配置来处理请求
+     */
     r->main_conf = hc->conf_ctx->main_conf;
     r->srv_conf = hc->conf_ctx->srv_conf;
     r->loc_conf = hc->conf_ctx->loc_conf;
@@ -617,6 +686,7 @@ ngx_http_create_request(ngx_connection_t *c)
     r->main = r;
     r->count = 1;
 
+    /* 设置请求开始处理的时间 */
     tp = ngx_timeofday();
     r->start_sec = tp->sec;
     r->start_msec = tp->msec;
@@ -947,7 +1017,13 @@ ngx_http_ssl_servername(ngx_ssl_conn_t *ssl_conn, int *ad, void *arg)
 
 #endif
 
-
+/*
+ * 该函数用来处理请求行，请求行格式如下: GET /uri HTTP/1.1
+ * 从上面的格式可以看出，请求行的长度是不定的，它与请求的uri长度相关。这意味着连接对应的套接字
+ * 缓冲区大小未必足够接收到全部的http请求行，因此调用一次ngx_http_process_request_line()不一定
+ * 能完全解析请求行的工作，所以它可能被epoll多次调度，反复接收tcp流并用状态机解析直到解析出
+ * 完整的请求行。
+ */
 static void
 ngx_http_process_request_line(ngx_event_t *rev)
 {
@@ -957,12 +1033,14 @@ ngx_http_process_request_line(ngx_event_t *rev)
     ngx_connection_t    *c;
     ngx_http_request_t  *r;
 
+    /* 获取事件对应的连接和请求对象 */
     c = rev->data;
     r = c->data;
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, rev->log, 0,
                    "http process request line");
 
+    /* 检查事件是否超时 */
     if (rev->timedout) {
         ngx_log_error(NGX_LOG_INFO, c->log, NGX_ETIMEDOUT, "client timed out");
         c->timedout = 1;
@@ -975,19 +1053,36 @@ ngx_http_process_request_line(ngx_event_t *rev)
     for ( ;; ) {
 
         if (rc == NGX_AGAIN) {
-            n = ngx_http_read_request_header(r);
+            n = ngx_http_read_request_header(r);  // 读取请求头信息
 
+            /* 
+             * ngx_http_read_request_header()返回NGX_AGAIN表示本次没有接收到数据，
+             * 仍需要接收更多的数据，return会将控制权交还给事件模块，对该事件再进行调度
+             * ngx_http_read_request_header()返回NGX_ERROR，表明客户端已经关闭了连接或者
+             * 连接出错，在ngx_http_read_request_header()已经结束了请求。
+             */
             if (n == NGX_AGAIN || n == NGX_ERROR) {
                 return;
             }
         }
 
+        /* 解析请求行 */
         rc = ngx_http_parse_request_line(r, r->header_in);
 
+        /*
+         * ngx_http_parse_request_line()函数返回值:
+         * 1. NGX_OK,表示成功地解析到完整的http请求行
+         * 2. NGX_AGAIN,表示目前接收到的字符流还不足以构成完整的http请求行
+         * 3. NGX_HTTP_PARSE_INVALID_METHOD和NGX_HTTP_PARSE_INVALID_REQUEST等，
+         *    表示接收到非法的请求行
+         */
+
+        /* 解析到完整的请求行 */
         if (rc == NGX_OK) {
 
             /* the request line has been parsed successfully */
 
+            /* 设置请求行内容和长度 */
             r->request_line.len = r->request_end - r->request_start;
             r->request_line.data = r->request_start;
             r->request_length = r->header_in->pos - r->request_start;
@@ -995,6 +1090,7 @@ ngx_http_process_request_line(ngx_event_t *rev)
             ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
                            "http request line: \"%V\"", &r->request_line);
 
+            /* 设置方法名 */
             r->method_name.len = r->method_end - r->request_start + 1;
             r->method_name.data = r->request_line.data;
 
@@ -1006,6 +1102,10 @@ ngx_http_process_request_line(ngx_event_t *rev)
                 return;
             }
 
+            /* 
+             * 设置headers_in.server字段，并利用host重定位server配置块,因为在这之前
+             * 都是用这个ip:port上面的默认server来处理的。
+             */
             if (r->host_start && r->host_end) {
 
                 host.len = r->host_end - r->host_start;
@@ -1025,6 +1125,9 @@ ngx_http_process_request_line(ngx_event_t *rev)
                     return;
                 }
 
+                /*
+                 * 利用host重定位server配置块,因为在这之前都是用这个ip:port上面的默认server来处理的。
+                 */
                 if (ngx_http_set_virtual_server(r, &host) == NGX_ERROR) {
                     return;
                 }
@@ -1032,6 +1135,10 @@ ngx_http_process_request_line(ngx_event_t *rev)
                 r->headers_in.server = host;
             }
 
+            /*
+             * 如果http的版本小于1.0， 那么将不会接收请求头部，而是调用ngx_http_set_virtual_server()
+             * 需要处理请求的虚拟主机,并调用ngx_http_process_request处理请求 
+             */
             if (r->http_version < NGX_HTTP_VERSION_10) {
 
                 if (r->headers_in.server.len == 0
@@ -1045,7 +1152,7 @@ ngx_http_process_request_line(ngx_event_t *rev)
                 return;
             }
 
-
+            /* 初始化请求中的headers_in.headers，为解析http请求头部做准备 */
             if (ngx_list_init(&r->headers_in.headers, r->pool, 20,
                               sizeof(ngx_table_elt_t))
                 != NGX_OK)
@@ -1056,12 +1163,14 @@ ngx_http_process_request_line(ngx_event_t *rev)
 
             c->log->action = "reading client request headers";
 
+            /* 将读事件回调设置为ngx_http_process_request_headers */
             rev->handler = ngx_http_process_request_headers;
-            ngx_http_process_request_headers(rev);
+            ngx_http_process_request_headers(rev);  // 有可能在解析请求行的时候已经接收到了请求头内容
 
             return;
         }
 
+        /* rc != NGX_AGAIN表示接收到了非法的请求行 */
         if (rc != NGX_AGAIN) {
 
             /* there was error while a request line parsing */
@@ -1073,7 +1182,11 @@ ngx_http_process_request_line(ngx_event_t *rev)
         }
 
         /* NGX_AGAIN: a request line parsing is still incomplete */
-
+        /*
+         * NGX_AGAIN表示目前接收到的字符流还不足以构成完整的请求行，需要接收更多的数据
+         * r->header_in->pos == r->header_in->end表示缓冲区已经用完了，需要分配更大的
+         * 缓冲区--ngx_http_alloc_large_header_buffer()。
+         */
         if (r->header_in->pos == r->header_in->end) {
 
             rv = ngx_http_alloc_large_header_buffer(r, 1);
@@ -1399,7 +1512,7 @@ ngx_http_process_request_headers(ngx_event_t *rev)
     }
 }
 
-
+/* 读取请求头信息 */
 static ssize_t
 ngx_http_read_request_header(ngx_http_request_t *r)
 {
@@ -1411,12 +1524,15 @@ ngx_http_read_request_header(ngx_http_request_t *r)
     c = r->connection;
     rev = c->read;
 
+    /* pos成员和last成员之间的指向的地址之间的内存就是接收到的未解析的字符流 */
     n = r->header_in->last - r->header_in->pos;
 
+    /* 如果用户态缓冲区中仍有未解析的字符流，则返回，不会调用recv从内核态套接字缓冲区获取请求数据 */
     if (n > 0) {
         return n;
     }
 
+    /* rev->ready表明当前事件就绪，即内核套接字缓冲区中有数据可读 */
     if (rev->ready) {
         n = c->recv(c, r->header_in->last,
                     r->header_in->end - r->header_in->last);
@@ -1424,6 +1540,7 @@ ngx_http_read_request_header(ngx_http_request_t *r)
         n = NGX_AGAIN;
     }
 
+    /* c->recv()返回NGX_AGAIN表示没有接收到客户端的请求数据 */
     if (n == NGX_AGAIN) {
         if (!rev->timer_set) {
             cscf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
@@ -1438,11 +1555,13 @@ ngx_http_read_request_header(ngx_http_request_t *r)
         return NGX_AGAIN;
     }
 
+    /* c->recv()返回0表示客户端主动关闭了连接 */
     if (n == 0) {
         ngx_log_error(NGX_LOG_INFO, c->log, 0,
                       "client prematurely closed connection");
     }
 
+    /* 客户端主动关闭连接或者连接出错 */
     if (n == 0 || n == NGX_ERROR) {
         c->error = 1;
         c->log->action = "reading client request headers";
@@ -1451,6 +1570,7 @@ ngx_http_read_request_header(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
+    /* 移动last指针，表示新接收到了n字节的用户数据 */
     r->header_in->last += n;
 
     return n;
@@ -2041,7 +2161,7 @@ ngx_http_validate_host(ngx_str_t *host, ngx_pool_t *pool, ngx_uint_t alloc)
     return NGX_OK;
 }
 
-
+/* 利用解析出来的host字段值获取真正的虚拟主机 */
 static ngx_int_t
 ngx_http_set_virtual_server(ngx_http_request_t *r, ngx_str_t *host)
 {
@@ -2078,6 +2198,7 @@ ngx_http_set_virtual_server(ngx_http_request_t *r, ngx_str_t *host)
 
 #endif
 
+    /* 利用解析出来的host字段值获取真正的虚拟主机 */
     rc = ngx_http_find_virtual_server(r->connection,
                                       hc->addr_conf->virtual_names,
                                       host, r, &cscf);
@@ -2114,6 +2235,7 @@ ngx_http_set_virtual_server(ngx_http_request_t *r, ngx_str_t *host)
         return NGX_OK;
     }
 
+    /* 利用解析出来的host字段值获取真正的虚拟主机,并将虚拟主机的配置信息设置到请求对象中 */
     r->srv_conf = cscf->ctx->srv_conf;
     r->loc_conf = cscf->ctx->loc_conf;
 
@@ -2132,6 +2254,12 @@ ngx_http_find_virtual_server(ngx_connection_t *c,
 {
     ngx_http_core_srv_conf_t  *cscf;
 
+    /* 
+     * virtual_names == NULL的情况是在当前监听的ip:port上只有一个server，所以就没必要利用
+     * server_name的hash来定位请求对应的真正server，因为默认使用的server就是请求对应的真正server
+     * 当一个ip:port上有多个server进行监听时，有可能当前请求对应的server并不是默认server，
+     * 这个时候就会用请求行或者请求头中解析出来的host值去获取请求对应的真正server块
+     */
     if (virtual_names == NULL) {
         return NGX_DECLINED;
     }

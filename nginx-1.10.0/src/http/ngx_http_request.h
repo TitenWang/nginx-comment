@@ -300,9 +300,10 @@ typedef struct {
 
 typedef struct ngx_http_addr_conf_s  ngx_http_addr_conf_t;
 
+/* 该结构体存储的是服务端与客户端连接对应的[port,ip]配置信息 */
 typedef struct {
-    ngx_http_addr_conf_t             *addr_conf;
-    ngx_http_conf_ctx_t              *conf_ctx;
+    ngx_http_addr_conf_t             *addr_conf;  // [port,ip]对应的配置信息，包括默认server等
+    ngx_http_conf_ctx_t              *conf_ctx;  // 指向[port,ip]对应的server块配置项结构体数组
 
 #if (NGX_HTTP_SSL && defined SSL_CTRL_SET_TLSEXT_HOSTNAME)
     ngx_str_t                        *ssl_servername;
@@ -387,6 +388,8 @@ struct ngx_http_request_s {
                                          /* of ngx_http_upstream_state_t */
 
     ngx_pool_t                       *pool;
+
+    /* 指向用于接收、缓存客户端发来的字节流的缓冲区，和ngx_connectoin_t结构体中的buffer字段指向的空间一样 */
     ngx_buf_t                        *header_in;
 
     ngx_http_headers_in_t             headers_in;

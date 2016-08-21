@@ -715,7 +715,7 @@ ngx_epoll_add_connection(ngx_connection_t *c)
 {
     struct epoll_event  ee;
 
-    /*将连接对应的读写事件都加入epoll中*/
+    /*将连接对应的读写事件以边缘触发方式都加入epoll中*/
     ee.events = EPOLLIN|EPOLLOUT|EPOLLET|EPOLLRDHUP;
     ee.data.ptr = (void *) ((uintptr_t) c | c->read->instance);
 

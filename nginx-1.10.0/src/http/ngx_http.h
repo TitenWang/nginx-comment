@@ -51,7 +51,7 @@ typedef u_char *(*ngx_http_log_handler_pt)(ngx_http_request_t *r,
 #include <ngx_http_ssl_module.h>
 #endif
 
-
+/* http日志上下文 */
 struct ngx_http_log_ctx_s {
     ngx_connection_t    *connection;
     ngx_http_request_t  *request;

@@ -39,7 +39,7 @@ struct ngx_listening_s {
     /* handler of accepted connection */
     ngx_connection_handler_pt   handler;  //新的tcp连接成功建立了后的处理方法
 
-    /*用于保存当前监听端口对应着的所有主机名*/
+    /*用于保存当前监听端口对应着的所有监听地址信息，每个监听地址(ip:port)包含着监听这个地址的所有server信息*/
     void               *servers;  /* array of ngx_http_in_addr_t, for example */
 
     /*日志对象*/
