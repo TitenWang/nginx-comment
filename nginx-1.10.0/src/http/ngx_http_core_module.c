@@ -4405,10 +4405,19 @@ ngx_http_core_server_name(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     value = cf->args->elts;
 
+    /*
+     * cf->args动态数组的第一个元素是server_name命令本身，后续元素开始才是配置的
+     * 虚拟主机名称。
+     */
     for (i = 1; i < cf->args->nelts; i++) {
 
         ch = value[i].data[0];
 
+        /*
+         * 下面的两种情况都是名称不支持的情况:
+         * 如果通配符前置，那么紧跟在通配符后面的一定要是'.'，并且名称的长度不能小于3
+         * 如果名称以'.'开头，那么名称长度不能小于2
+         */
         if ((ch == '*' && (value[i].len < 3 || value[i].data[1] != '.'))
             || (ch == '.' && value[i].len < 2))
         {
@@ -4417,6 +4426,7 @@ ngx_http_core_server_name(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             return NGX_CONF_ERROR;
         }
 
+        /* 如果名称中含有'/'，则打印告警 */
         if (ngx_strchr(value[i].data, '/')) {
             ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
                                "server name \"%V\" has suspicious symbols",
@@ -4425,7 +4435,7 @@ ngx_http_core_server_name(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
         /* 
          * 从cscf->server_names数组中获取一个元素用来存储server_names命令的一个参数。
-         * 因为server_names命令后面可以跟多个参数，如server_names www.baid0.com www.baidu1.com ...
+         * 因为server_names命令后面可以跟多个参数，如server_names www.baidu0.com www.baidu1.com ...
          */
         sn = ngx_array_push(&cscf->server_names);
         if (sn == NULL) {
@@ -4438,7 +4448,10 @@ ngx_http_core_server_name(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         /* server成员设置为当前server配置块 */
         sn->server = cscf;
 
-        /* 设置name成员，即server块的host */
+        /* 
+         * 设置name成员，如果名称中是变量"$hostname"，则将name成员设置为本机的主机名，
+         * 否则设置为解析到的内容
+         */
         if (ngx_strcasecmp(value[i].data, (u_char *) "$hostname") == 0) {
             sn->name = cf->cycle->hostname;
 
@@ -4446,6 +4459,10 @@ ngx_http_core_server_name(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             sn->name = value[i];
         }
 
+        /*
+         * 如果名称中不是以'~'开头，则说明不是正则表达式的情况，此时将解析到的名称
+         * 转换成小写后继续处理下一个名称
+         */
         if (value[i].data[0] != '~') {
             ngx_strlow(sn->name.data, sn->name.data, sn->name.len);
             continue;
