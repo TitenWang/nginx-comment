@@ -212,7 +212,7 @@ struct ngx_http_phase_handler_s {
     ngx_http_handler_pt        handler;
 
     /*
-     * 将要执行的下一个处理阶段的序号
+     * 将要执行的下一个处理阶段的第一个处理函数在cmcf->phase_engine.handlers数组中的序号
      */
     ngx_uint_t                 next;
 };
@@ -220,7 +220,10 @@ struct ngx_http_phase_handler_s {
 
 typedef struct {
     /*
-     * 一个请求可能经历的所有处理方法(所有阶段的所有处理方法都会收集在这个数组中)
+     * 一个请求可能经历的所有处理方法(所有阶段的所有处理方法都会收集在这个数组中)。
+     * handlers数组是如何使用的呢?该数组要配合着ngx_http_request_t结构体中的phase_handler序号
+     * 使用，有phase_handler指定着请求将要执行的的阶段处理函数在handlers数组中的序号。
+     * 使用方式可以参见ngx_http_core_run_phases()
      */
     ngx_http_phase_handler_t  *handlers;
 

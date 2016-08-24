@@ -795,6 +795,12 @@ ngx_http_handler(ngx_http_request_t *r)
 
     r->connection->unexpected_eof = 0;
 
+    /*
+     *     检查r->internal，如果该标志位为1，表明该请求是子请求，需要做内部跳转，因此将r->pahse_handler
+     * 设置为server_rewrite_index，表示子请求需要从NGX_HTTP_SERVER_REWRITE_PHASE开始重走请求处理阶段
+     *     如果该标志位为0，表明不是子请求，此时将r->phase_handler设置为0，意味着从cmcf->pahse_engine.handlers
+     * 数组的第一个回调函数开始执行。
+     */
     if (!r->internal) {
         switch (r->headers_in.connection_type) {
         case 0:
@@ -812,10 +818,19 @@ ngx_http_handler(ngx_http_request_t *r)
 
         r->lingering_close = (r->headers_in.content_length_n > 0
                               || r->headers_in.chunked);
+        /*
+         * 将r->phase_handler设置为0，意味着从cmcf->pahse_engine.handlers数组的
+         * 第一个回调函数开始执行。
+         */
         r->phase_handler = 0;
 
     } else {
         cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
+
+        /*
+         *     将r->phase_handler设置为NGX_HTTP_SERVER_REWRITE_PHASE阶段的第一个回调函数在
+         * cmcf->pahse_engine.handlers数组的序号，从该阶段开始执行。
+         */
         r->phase_handler = cmcf->phase_engine.server_rewrite_index;
     }
 
@@ -826,11 +841,16 @@ ngx_http_handler(ngx_http_request_t *r)
     r->gzip_vary = 0;
 #endif
 
+    /*
+     * 将当前请求的写事件处理函数设置为ngx_http_core_run_phases()
+     */
     r->write_event_handler = ngx_http_core_run_phases;
+
+    /* 开始调用各个http模块共同处理请求 */
     ngx_http_core_run_phases(r);
 }
 
-
+/* 调用各个http模块处理请求 */
 void
 ngx_http_core_run_phases(ngx_http_request_t *r)
 {
@@ -838,14 +858,29 @@ ngx_http_core_run_phases(ngx_http_request_t *r)
     ngx_http_phase_handler_t   *ph;
     ngx_http_core_main_conf_t  *cmcf;
 
+    /* 获取全局唯一的代表着http{}配置块信息的结构体 */
     cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
 
+    /* 
+     * handlers数组存储着一个请求可能经历的所有处理方法(所有阶段的所有处理方法都
+     * 会收集在这个数组中)。数组中的每一个元素代表着一个http阶段所添加的一个处理方法
+     */
     ph = cmcf->phase_engine.handlers;
 
+    /* 有phase_handler指定着请求将要执行的的阶段处理函数在handlers数组中的序号。 */
     while (ph[r->phase_handler].checker) {
 
+        /*
+         * 每个handler方法必须对应着一个checker方法，因为handler方法只能被checker方法调用。
+         * 同一个阶段的所有处理方法都拥有一样的checker
+         */
         rc = ph[r->phase_handler].checker(r, &ph[r->phase_handler]);
 
+        /*
+         * 如果任何一个checker方法返回NGX_OK，则意味着将程序执行控制权还给Nginx的事件模块，
+         * 由它根据事件再次调度请求。如果任何一个checker方法返回非NGX_OK，则意味着继续向下执行
+         * cmcf->phase_engine.handlers数组中的处理方法
+         */
         if (rc == NGX_OK) {
             return;
         }
@@ -866,18 +901,31 @@ ngx_http_core_generic_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "generic phase: %ui", r->phase_handler);
 
+    /* 调用http模块实现的handler方法 */
     rc = ph->handler(r);
 
+    /*
+     * 如果handler方法返回NGX_OK，表明该阶段已经执行完毕，需要跳转到下一个阶段执行，
+     * 将r->phase_handler设置为下一个阶段第一个处理方法的序号
+     */
     if (rc == NGX_OK) {
         r->phase_handler = ph->next;
         return NGX_AGAIN;
     }
 
+    /* 如果handler方法返回NGX_DECLINED，表明需要执行下一个处理函数 */
     if (rc == NGX_DECLINED) {
         r->phase_handler++;
         return NGX_AGAIN;
     }
 
+    /*
+     * 如果handler方法返回NGX_AGAIN或NGX_DONE，表明当前handler方法无法在这次调度中完成，
+     * 因此需要将程序执行控制权交还给事件模块，等到请求对应的事件再次被触发时，将由
+     * ngx_http_request_handler()通过ngx_http_core_run_phases()再次调度这个handler方法
+     * 为什么再次调度的时候还可以找到这个方法呢，因为r->phase_handler仍然指向cmcf->phase_engine.handlers
+     * 中的这个方法
+     */
     if (rc == NGX_AGAIN || rc == NGX_DONE) {
         return NGX_OK;
     }
@@ -889,7 +937,9 @@ ngx_http_core_generic_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
     return NGX_OK;
 }
 
-
+/*
+ * NGX_HTTP_SERVER_REWRITE_PHASE和NGX_HTTP_REWRITE_PHASE阶段的checker方法
+ */
 ngx_int_t
 ngx_http_core_rewrite_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
 {
@@ -898,13 +948,19 @@ ngx_http_core_rewrite_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "rewrite phase: %ui", r->phase_handler);
 
+    /* 调用http模块实现的handler方法 */
     rc = ph->handler(r);
 
+    /* 如果handler方法返回NGX_DECLINED，表明需要执行下一个处理函数，此时控制权不会交还给事件模块 */
     if (rc == NGX_DECLINED) {
         r->phase_handler++;
         return NGX_AGAIN;
     }
 
+    /* 
+     * 如果handler方法返回NGX_DONE，表明该handler方法无法再此次调度中完成处理，而将控制权交还给事件模块，
+     * 等待epoll再次触发该请求上的事件
+     */
     if (rc == NGX_DONE) {
         return NGX_OK;
     }
@@ -916,7 +972,9 @@ ngx_http_core_rewrite_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
     return NGX_OK;
 }
 
-
+/*
+ * NGX_HTTP_FIND_CONFIG_PHASE阶段的checker方法
+ */
 ngx_int_t
 ngx_http_core_find_config_phase(ngx_http_request_t *r,
     ngx_http_phase_handler_t *ph)
@@ -929,6 +987,7 @@ ngx_http_core_find_config_phase(ngx_http_request_t *r,
     r->content_handler = NULL;
     r->uri_changed = 0;
 
+    /*寻找当前请求uri匹配的location，主要用于设置r->loc_conf为当前匹配的location 的配置结构体*/
     rc = ngx_http_core_find_location(r);
 
     if (rc == NGX_ERROR) {
@@ -938,6 +997,7 @@ ngx_http_core_find_config_phase(ngx_http_request_t *r,
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
+    /* 如果当前请求不是子请求，但是该location只能又子请求访问，所以只能结束请求 */
     if (!r->internal && clcf->internal) {
         ngx_http_finalize_request(r, NGX_HTTP_NOT_FOUND);
         return NGX_OK;
@@ -1055,13 +1115,20 @@ ngx_http_core_post_rewrite_phase(ngx_http_request_t *r,
     return NGX_AGAIN;
 }
 
-
+/*
+ * NGX_HTTP_ACCESS_PHASE阶段的checker方法
+ */
 ngx_int_t
 ngx_http_core_access_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
 {
     ngx_int_t                  rc;
     ngx_http_core_loc_conf_t  *clcf;
 
+    /*
+     * 如果当前请求是子请求，则不需要进行该阶段的处理，因为该阶段是用来控制客户端是否有权限
+     * 访问业务的，而子请求是由请求内部因为业务需要产生的，不直接和客户端关联，因此不需要
+     * 控制子请求的访问权限，直接跳转到下一个阶段继续执行
+     */
     if (r != r->main) {
         r->phase_handler = ph->next;
         return NGX_AGAIN;
@@ -1070,27 +1137,45 @@ ngx_http_core_access_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "access phase: %ui", r->phase_handler);
 
+    /* 调用介入该阶段的http模块实现的handler方法 */
     rc = ph->handler(r);
 
+    /* 如果handler方法返回NGX_DECLINED，表明立即指向下一个处理方法，不会将控制权交还给事件模块 */
     if (rc == NGX_DECLINED) {
         r->phase_handler++;
         return NGX_AGAIN;
     }
 
+    /*
+     * 如果handler方法返回NGX_AGAIN或者NGX_DONE，表明该handler无法一次性执行完毕，因此需要将
+     * 控制权交还给事件模块，等待请求事件再次触发，然后继续执行该handler方法
+     */
     if (rc == NGX_AGAIN || rc == NGX_DONE) {
         return NGX_OK;
     }
 
+    /* 获取代表着当前location的配置块信息 */
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
     if (clcf->satisfy == NGX_HTTP_SATISFY_ALL) {
 
+        /*
+         * 如果satisfy为all，则表明需要该阶段的所有http模块均返回NGX_OK，才代表该请求具有访问权限，
+         * 因此将r->phase_handler加1，接着执行下一个该阶段的处理方法。
+         * 
+         */
         if (rc == NGX_OK) {
             r->phase_handler++;
             return NGX_AGAIN;
         }
 
     } else {
+
+        /*
+         * 如果satisfy为any，则表明只要该阶段的其中任意一个http模块的handler方法返回NGX_OK，
+         * 那么该请求就具备了访问服务的权限，此时将r->access_code设为0，表明具备访问权限。
+         * 同时将跳转到下一个阶段开始处理请求
+         */
         if (rc == NGX_OK) {
             r->access_code = 0;
 
@@ -1102,7 +1187,17 @@ ngx_http_core_access_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
             return NGX_AGAIN;
         }
 
+        /*
+         * 如果handler方法返回NGX_HTTP_FORBIDDEN或NGX_HTTP_UNAUTHORIZED，则当前模块认为该请求
+         * 没有访问权限，但此时无法认定请求不具备访问权限，因此接着执行下一个处理方法，只要
+         * NGX_HTTP_ACCESS_PHASE阶段后续任一handler方法返回NGX_OK，就表明该阶段具备了访问权限
+         * 
+         */
         if (rc == NGX_HTTP_FORBIDDEN || rc == NGX_HTTP_UNAUTHORIZED) {
+            /*
+             * 此时会将请求的r->access_code成员设置为handler方法的返回值，用于传递当前http模块的
+             * 的处理结果。
+             */
             if (r->access_code != NGX_HTTP_UNAUTHORIZED) {
                 r->access_code = rc;
             }
