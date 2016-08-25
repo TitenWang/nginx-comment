@@ -480,9 +480,19 @@ ngx_http_init_phase_handlers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
     use_rewrite = cmcf->phases[NGX_HTTP_REWRITE_PHASE].handlers.nelts ? 1 : 0;
     use_access = cmcf->phases[NGX_HTTP_ACCESS_PHASE].handlers.nelts ? 1 : 0;
 
-    /* NGX_HTTP_FIND_CONFIG_PHASE阶段是必备的 */
+    /*
+     * NGX_HTTP_FIND_CONFIG_PHASE阶段是必备的，如果配置文件中配置了try_files命令，
+     * 则会有NGX_HTTP_TRY_FILES_PHASE阶段
+     */
     n = use_rewrite + use_access + cmcf->try_files + 1 /* find config phase */;
 
+    /*
+     * 从这里的实现可以看出，在NGX_HTTP_LOG_PHASE阶段注册的模块处理函数并不会被加入到
+     * cmcf->pahse_engine.handlers数组中，因为这里只收集了NGX_HTTP_LOG_PHASE之前的处理
+     * 函数，那么NGX_HTTP_LOG_PHASE阶段注册的处理函数在什么时候被调用的呢?其实是在结束
+     * 请求的函数ngx_http_free_request()中调用ngx_http_log_request()调用NGX_HTTP_LOG_PHASE
+     * 阶段的处理函数
+     */
     for (i = 0; i < NGX_HTTP_LOG_PHASE; i++) {
         n += cmcf->phases[i].handlers.nelts;
     }

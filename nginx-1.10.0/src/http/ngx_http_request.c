@@ -3688,6 +3688,7 @@ ngx_http_free_request(ngx_http_request_t *r, ngx_int_t rc)
 
     log->action = "logging request";
 
+    /* 调用NGX_HTTP_LOG_PHASE阶段的处理函数记录访问日志，因为记录访问日志必须在请求将要结束的时候进行 */
     ngx_http_log_request(r);
 
     log->action = "closing request";

@@ -124,17 +124,21 @@ typedef enum {
     NGX_HTTP_POST_READ_PHASE = 0,
 
     /*
-     * 在将请求的uri和location表达式匹配前，修改请求的uri(重定向)
+     * 在将请求的uri和location表达式匹配前，修改请求的uri(重定向)，请求进入此阶段时已经找到了对应的
+     * server虚拟主机配置，无论是否修改了请求的uri，都将会执行下一个处理阶段NGX_HTTP_FIND_CONFIG_PHASE
      */
     NGX_HTTP_SERVER_REWRITE_PHASE,
 
     /*
-     * 根据请求的uri寻找匹配的location表达式,该阶段只能由http框架处理
+     * 根据请求的uri寻找匹配的location表达式，实际上就是设置r->loc_conf，在此之前r->loc_conf指向的是
+     * server级别的loc_conf配置，该阶段只能由http框架处理
      */
     NGX_HTTP_FIND_CONFIG_PHASE,
 
     /*
-     * 在NGX_HTTP_FIND_CONFIG_PHASE阶段寻找到匹配的location时候再次修改请求的uri
+     * 在NGX_HTTP_FIND_CONFIG_PHASE阶段寻找到匹配的location之后该阶段再次修改请求的uri，该阶段执行完后一定会执行到
+     * NGX_HTTP_POST_REWRITE_PHASE，因为如果在NGX_HTTP_REWRITE_PHASE修改了uri，那么在NGX_HTTP_POST_REWRITE_PHASE
+     * 阶段会跳转到NGX_HTTP_FIND_CONFIG_PHASE阶段重新获取请求的r->loc_conf
      */
     NGX_HTTP_REWRITE_PHASE,
 
@@ -142,7 +146,9 @@ typedef enum {
      * 这一阶段用于在rewrite重写uri后，防止错误的nginx.conf配置导致死循环，这一阶段
      * 仅有http框架处理。目前控制死循环的方式很简单，如果一个请求重定向的次数超过
      * 10次就认为进入了rewrite死循环，此时在NGX_HTTP_POST_REWRITE_PHASE阶段就会向
-     * 用户返回600，表示服务器内部错误
+     * 用户返回600，表示服务器内部错误。
+     * 该阶段仅仅用于检测上一个阶段是否进行了uri重写，如果没有，则直接跳转到下一个阶段处理，即NGX_HTTP_PREACCESS_PHASE，
+     * 如果上一个阶段进行了uri重写，则利用ph->next成员跳转到NGX_HTTP_FIND_CONFIG_PHASE执行匹配location操作。
      */
     NGX_HTTP_POST_REWRITE_PHASE,
 
@@ -152,7 +158,7 @@ typedef enum {
     NGX_HTTP_PREACCESS_PHASE,
 
     /*
-     * 这个阶段用于让http模块判断是否允许这个请求访问Nginx服务器
+     * 这个阶段用于让http模块判断是否允许这个客户端请求(子请求不需要经历此阶段)访问Nginx服务器
      */
     NGX_HTTP_ACCESS_PHASE,
 
@@ -170,12 +176,12 @@ typedef enum {
     NGX_HTTP_TRY_FILES_PHASE,
 
     /*
-     * 用于处理http请求内容的阶段，这是大部分http模块介入的阶段
+     * 用于处理http请求内容的阶段，请求从这里开始处理业务逻辑并产生响应，这是大部分http模块介入的阶段
      */
     NGX_HTTP_CONTENT_PHASE,
 
     /*
-     * 处理完请求后记录日志的阶段
+     * 处理完请求后记录日志的阶段，该阶段会在请求将要结束的时候处理
      */
     NGX_HTTP_LOG_PHASE
 } ngx_http_phases;

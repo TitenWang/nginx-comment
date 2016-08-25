@@ -951,6 +951,13 @@ ngx_http_core_rewrite_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
     /* 调用http模块实现的handler方法 */
     rc = ph->handler(r);
 
+    /*
+     * 从下面的实现可以看出，该阶段不会使用ph->next进行跨阶段跳转，而是一个接一个往下执行处理函数，
+     * 换句话说，该阶段执行完之后一定会执行到紧接着的下一个阶段，即如果该checker在NGX_HTTP_SERVER_REWRITE_PHASE
+     * 则会执行到NGX_HTTP_FIND_CONFIG_PHASE，如果该checker在NGX_HTTP_REWRITE_PHASE，则会执行到
+     * NGX_HTTP_POST_REWRITE_PHASE阶段。
+     */
+
     /* 如果handler方法返回NGX_DECLINED，表明需要执行下一个处理函数，此时控制权不会交还给事件模块 */
     if (rc == NGX_DECLINED) {
         r->phase_handler++;
@@ -1008,6 +1015,7 @@ ngx_http_core_find_config_phase(ngx_http_request_t *r,
                    (clcf->noname ? "*" : (clcf->exact_match ? "=" : "")),
                    &clcf->name);
 
+    /* 在这个函数中会设置r->content_handler为ngx_http_core_loc_conf_t中的phase_handler */
     ngx_http_update_location_config(r);
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
@@ -1071,7 +1079,9 @@ ngx_http_core_find_config_phase(ngx_http_request_t *r,
     return NGX_AGAIN;
 }
 
-
+/*
+ * NGX_HTTP_POST_REWRITE_PHASE阶段的checker方法
+ */
 ngx_int_t
 ngx_http_core_post_rewrite_phase(ngx_http_request_t *r,
     ngx_http_phase_handler_t *ph)
@@ -1081,6 +1091,13 @@ ngx_http_core_post_rewrite_phase(ngx_http_request_t *r,
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "post rewrite phase: %ui", r->phase_handler);
 
+    /*
+     * 如果r->uri_changed标志位为0，表示在NGX_HTTP_REWRITE_PHASE阶段并没有修改请求的uri，即没有重定向，
+     * 此时继续执行下一个处理函数(其实也就是下一个处理阶段--NGX_HTTP_PREACCESS_PHASE阶段)。
+     * 如果r->uri_changed标志位为1，表示在NGX_HTTP_REWRITE_PHASE阶段修改了请求的uri，进行重定向。
+     * 因为重定向之后需要重新匹配请求的location，那么将直接跳转到有ph->next指定的下一个阶段，即为
+     * NGX_HTTP_FIND_CONFIG_PHASE阶段。这个可以在ngx_http_init_phase_handlers()中可以看到。
+     */
     if (!r->uri_changed) {
         r->phase_handler++;
         return NGX_AGAIN;
@@ -1096,6 +1113,7 @@ ngx_http_core_post_rewrite_phase(ngx_http_request_t *r,
      *     unsigned  uri_changes:4
      */
 
+    /* 可以进行重定向的次数，默认为十次，之后便会结束请求，返回500响应 */
     r->uri_changes--;
 
     if (r->uri_changes == 0) {
@@ -1107,8 +1125,13 @@ ngx_http_core_post_rewrite_phase(ngx_http_request_t *r,
         return NGX_OK;
     }
 
+    /* 将会执行下一个阶段的处理函数，其实就是NGX_HTTP_FIND_CONFIG_PHASE阶段 */
     r->phase_handler = ph->next;
 
+    /*
+     * 由于重定向需要重新匹配请求的location，所以r->loc_conf需要设置为新匹配的location配置，
+     * 但是由于此时暂时还没有匹配新的location，所以只能暂时指向server级别下的loc_conf配置结构体
+     */
     cscf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
     r->loc_conf = cscf->ctx->loc_conf;
 
@@ -1213,7 +1236,7 @@ ngx_http_core_access_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
     return NGX_OK;
 }
 
-
+/* NGX_HTTP_POST_ACCESS_PHASE阶段的checker函数 */
 ngx_int_t
 ngx_http_core_post_access_phase(ngx_http_request_t *r,
     ngx_http_phase_handler_t *ph)
@@ -1223,6 +1246,7 @@ ngx_http_core_post_access_phase(ngx_http_request_t *r,
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "post access phase: %ui", r->phase_handler);
 
+    /* 获取请求是否具有访问权限的标志位，如果标志位为1，表示请求不具备访问权限，请求结束 */
     access_code = r->access_code;
 
     if (access_code) {
@@ -1236,11 +1260,15 @@ ngx_http_core_post_access_phase(ngx_http_request_t *r,
         return NGX_OK;
     }
 
+    /*
+     * 程序执行到这里表明当前客户端请求具备了访问权限，因此接着执行下一个处理函数，其实也就是下一个
+     * 阶段的处理函数，因为这里返回NGX_AGAIN并不会将程序执行控制权交还给事件模块，而是会接着往下执行
+     */
     r->phase_handler++;
     return NGX_AGAIN;
 }
 
-
+/* NGX_HTTP_TRY_FILES_PHASE阶段的checker方法 */
 ngx_int_t
 ngx_http_core_try_files_phase(ngx_http_request_t *r,
     ngx_http_phase_handler_t *ph)
@@ -1259,8 +1287,13 @@ ngx_http_core_try_files_phase(ngx_http_request_t *r,
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "try files phase: %ui", r->phase_handler);
 
+    /* 获取请求匹配的location的配置项信息 */
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
+    /*
+     * 如果clcf->try_files中没有指定静态文件，则执行下一个处理函数，其实也是下一个阶段的第一个处理函数，
+     * 因为该阶段不允许http模块介入
+     */
     if (clcf->try_files == NULL) {
         r->phase_handler++;
         return NGX_AGAIN;
@@ -1451,7 +1484,11 @@ ngx_http_core_try_files_phase(ngx_http_request_t *r,
     /* not reached */
 }
 
-
+/*
+ * NGX_HTTP_CONTENT_PHASE阶段的checker方法
+ * 默认情况下，Nginx会在NGX_HTTP_CONTENT_PHASE阶段的handlers方法中注册index模块、
+ * 静态文件处理模块的hander方法
+ */
 ngx_int_t
 ngx_http_core_content_phase(ngx_http_request_t *r,
     ngx_http_phase_handler_t *ph)
@@ -1460,6 +1497,19 @@ ngx_http_core_content_phase(ngx_http_request_t *r,
     ngx_int_t  rc;
     ngx_str_t  path;
 
+    /*
+     * 如果当前location设置了handler处理方法，那么将会执行该handler方法(该方法在ngx_http_update_location_config()中
+     * 设置给了r->content_handler)。为什么需要将r->write_event_handler设置为ngx_http_request_empty_handler?
+     * 当执行r->content_handler处理流程时，Nginx默认模块会在r->content_handler函数中设置write_event_handler，
+     * 也就是说，如果r->content_handler方法只能被执行一次，而该函数可能在一次调度中并不能完成请求的处理，那么
+     * 就需要设置r->write_event_handler，并将程序执行控制权交还给事件模块，等到该请求的写事件再次触发时，将调用
+     * r->write_event_handler继续请求的处理(此时请求写事件回调为ngx_http_request_handler,在该函数中会调用
+     * r->write_event_handler)。
+     *
+     * 如果r->content_handler方法并没有一次性完成请求的处理，而是需要等待某个事件发生而退出处理流程的话，那么必须
+     * 给ngx_http_finalize_request()函数返回一个合适的值，一般情况下是NGX_DONE，并且在r->content_handler方法中
+     * 需要将请求的引用计数加1，确保ngx_http_finalize_request()不会释放该请求。
+     */
     if (r->content_handler) {
         r->write_event_handler = ngx_http_request_empty_handler;
         ngx_http_finalize_request(r, r->content_handler(r));
@@ -1469,14 +1519,30 @@ ngx_http_core_content_phase(ngx_http_request_t *r,
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "content phase: %ui", r->phase_handler);
 
+    /*
+     * 程序执行到这里表明并没有http模块向ngx_http_core_loc_conf_t的handler成员注册处理函数，此时将执行
+     * cmcf->phase_engine.handlers调用链中的处理函数
+     */
     rc = ph->handler(r);
 
+    /*
+     * 如果handler返回值为非NGX_DECLINED，那么将会结束请求，并将程序执行控制权交还给事件模块，因为
+     * NGX_HTTP_CONTENT_PHASE是调用链cmcf->phase_engine.handlers中的最后一个阶段，NGX_HTTP_LOG_PHASE
+     * 阶段的处理函数会在ngx_http_free_request()中被调用
+     */
     if (rc != NGX_DECLINED) {
         ngx_http_finalize_request(r, rc);
         return NGX_OK;
     }
 
     /* rc == NGX_DECLINED */
+    /*
+     * NGX_HTTP_CONTENT_PHASE阶段是ngx_http_core_run_phases()处理的最后一个阶段，虽然程序执行
+     * 到这里表明希望执行本阶段的下一个handler，但是当前的handler方法是不是已经就是最后一个handler
+     * 方法了呢?这需要进行检测。首先跳转到cmcf->phase_engine.handlers数组中的下一个元素，检测其
+     * checker方法是否存在，如果存在说明对应的handler方法也存在，则返回NGX_AGAIN接着执行下一个handler。
+     * 如不存在则结束请求。
+     */
 
     ph++;
 
@@ -1487,6 +1553,7 @@ ngx_http_core_content_phase(ngx_http_request_t *r,
 
     /* no content handler was found */
 
+    /* 如果请求的uri是以'/'结尾，则结束请求，并返回403响应给客户端 */
     if (r->uri.data[r->uri.len - 1] == '/') {
 
         if (ngx_http_map_uri_to_path(r, &path, &root, 0) != NULL) {
@@ -1500,6 +1567,7 @@ ngx_http_core_content_phase(ngx_http_request_t *r,
 
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "no handler found");
 
+    /* 如果请求的uri不是以'/'结尾，则结束请求，并返回404响应给客户端 */
     ngx_http_finalize_request(r, NGX_HTTP_NOT_FOUND);
     return NGX_OK;
 }
