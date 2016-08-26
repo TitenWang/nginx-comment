@@ -25,7 +25,7 @@ static ngx_int_t ngx_http_request_body_length_filter(ngx_http_request_t *r,
 static ngx_int_t ngx_http_request_body_chunked_filter(ngx_http_request_t *r,
     ngx_chain_t *in);
 
-
+/* 启动接收请求包体 */
 ngx_int_t
 ngx_http_read_client_request_body(ngx_http_request_t *r,
     ngx_http_client_body_handler_pt post_handler)
@@ -38,8 +38,16 @@ ngx_http_read_client_request_body(ngx_http_request_t *r,
     ngx_http_request_body_t   *rb;
     ngx_http_core_loc_conf_t  *clcf;
 
+    /* 先将主请求的引用计数加1，表示主请求新增了一个动作 */
     r->main->count++;
 
+    /*
+     * 1.如果该请求不是原始请求，则不需要接收客户端请求包体，因为子请求不是客户端产生的。
+     * 2.检查请求中的request_body成员，如果该成员已经被分配过了，证明之前已经读取过请求体了
+     * 不用再读取一遍。
+     * 3.如果请求中的discard_body标志位为1，表明之前已经执行过丢弃包体的方法，也不用再继续
+     * 读取请求体了。
+     */
     if (r != r->main || r->request_body || r->discard_body) {
         r->request_body_no_buffering = 0;
         post_handler(r);
@@ -53,11 +61,13 @@ ngx_http_read_client_request_body(ngx_http_request_t *r,
     }
 #endif
 
+    /* 检测客户端发送的请求头部中是否有Expect头部 */
     if (ngx_http_test_expect(r) != NGX_OK) {
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         goto done;
     }
 
+    /* 申请用于接收请求体的对象 */
     rb = ngx_pcalloc(r->pool, sizeof(ngx_http_request_body_t));
     if (rb == NULL) {
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -75,16 +85,22 @@ ngx_http_read_client_request_body(ngx_http_request_t *r,
      */
 
     rb->rest = -1;
-    rb->post_handler = post_handler;
+    rb->post_handler = post_handler;  // 设置包体读取完毕的回调方法，通常用于实现模块的业务逻辑
 
     r->request_body = rb;
 
+    /* 如果模块的Content-Length头部值小于0，则不用接收请求包体 */
     if (r->headers_in.content_length_n < 0 && !r->headers_in.chunked) {
         r->request_body_no_buffering = 0;
         post_handler(r);
         return NGX_OK;
     }
 
+    /*
+     * 在接收请求头部的流程中，是有可能接收到http请求包体的，所以这里需要检查接收头部的缓冲区
+     * 中是否预接收到了包体。我们知道header_in->last和header_in->pos之间的内存就是为解析的字符流。
+     * preread如果大于0，表示确实预接收到了包体
+     */
     preread = r->header_in->last - r->header_in->pos;
 
     if (preread) {
@@ -94,17 +110,24 @@ ngx_http_read_client_request_body(ngx_http_request_t *r,
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                        "http client request body preread %uz", preread);
 
+        /* 缓冲区链表指向头部缓冲区header_in */
         out.buf = r->header_in;
         out.next = NULL;
 
+        /* 该函数中会计算剩余未接收的包体长度 */
         rc = ngx_http_request_body_filter(r, &out);
 
         if (rc != NGX_OK) {
             goto done;
         }
 
+        /* 计算到目前位置已经接收到的请求的长度 */
         r->request_length += preread - (r->header_in->last - r->header_in->pos);
 
+        /*
+         * 如果存在剩余未接收的包体，并且剩余包体的长度小于头部缓冲区剩余长度，那么
+         * 将会使用头部缓冲区来接收剩余的包体
+         */
         if (!r->headers_in.chunked
             && rb->rest > 0
             && rb->rest <= (off_t) (r->header_in->end - r->header_in->last))
@@ -117,6 +140,7 @@ ngx_http_read_client_request_body(ngx_http_request_t *r,
                 goto done;
             }
 
+            /* 包体缓冲区直接指向了头部缓冲区对应的内存 */
             b->temporary = 1;
             b->start = r->header_in->pos;
             b->pos = r->header_in->pos;
@@ -125,9 +149,14 @@ ngx_http_read_client_request_body(ngx_http_request_t *r,
 
             rb->buf = b;
 
+            /*
+             * 因为接收请求包体的动作可能无法在一次调度中完成，所以需要设置请求读事件处理函数，
+             * 这样在连接对应的读事件再次被epoll调度时，可以继续执行接收包体的动作。
+             */
             r->read_event_handler = ngx_http_read_client_request_body_handler;
             r->write_event_handler = ngx_http_request_empty_handler;
 
+            /* 从连接对应的内核套接字缓冲区中读取包体 */
             rc = ngx_http_do_read_client_request_body(r);
             goto done;
         }
@@ -135,12 +164,14 @@ ngx_http_read_client_request_body(ngx_http_request_t *r,
     } else {
         /* set rb->rest */
 
+        /* 计算剩余未接收的请求包体的长度，即rb->rest */
         if (ngx_http_request_body_filter(r, NULL) != NGX_OK) {
             rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
             goto done;
         }
     }
 
+    /* rb->rest == 0表明已经接收到了完整的请求包体(其实是在头部缓冲区中就预读取完了请求体) */
     if (rb->rest == 0) {
         /* the whole request body was pre-read */
         r->request_body_no_buffering = 0;
@@ -157,14 +188,24 @@ ngx_http_read_client_request_body(ngx_http_request_t *r,
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
+    /*
+     * 程序执行到这里说明需要分配用于接收请求包体的缓冲区了，缓冲区的长度由配置文件中的
+     * client_body_buffer_size配置项指定。
+     */
     size = clcf->client_body_buffer_size;
     size += size >> 2;
 
     /* TODO: honor r->request_body_in_single_buf */
 
+    /* rb->rest < size表明剩余未接收包体用不了size长度，所以分配rb->rest长度就够了 */
     if (!r->headers_in.chunked && rb->rest < size) {
         size = (ssize_t) rb->rest;
 
+        /*
+         * 如果r->request_body_in_single_buf标志位为1，表明需要将所有的请求包体存放在一块缓冲区中，
+         * 这个时候需要将头部缓冲区中预读取的包体一并复制过来，所以在计算用于接收请求包体的缓冲区长度的时候，
+         * 需要为已经存放在头部缓冲区的包体分配相应的内存，因为那部分包体也要复制到该缓冲区中
+         */
         if (r->request_body_in_single_buf) {
             size += preread;
         }
@@ -173,15 +214,22 @@ ngx_http_read_client_request_body(ngx_http_request_t *r,
         size = clcf->client_body_buffer_size;
     }
 
+    /* 申请用于接收包体的缓冲区 */
     rb->buf = ngx_create_temp_buf(r->pool, size);
     if (rb->buf == NULL) {
         rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
         goto done;
     }
 
+    /* 设置请求读写事件 */
+    /*
+     * 因为接收请求包体的动作可能无法在一次调度中完成，所以需要设置请求读事件处理函数，
+     * 这样在连接对应的读事件再次被epoll调度时，可以继续执行接收包体的动作。
+     */
     r->read_event_handler = ngx_http_read_client_request_body_handler;
     r->write_event_handler = ngx_http_request_empty_handler;
 
+    /* 接收包体 */
     rc = ngx_http_do_read_client_request_body(r);
 
 done:
@@ -194,7 +242,7 @@ done:
 
         } else {
             /* rc == NGX_AGAIN */
-            r->reading_body = 1;
+            r->reading_body = 1;  // NGX_AGAIN表明正在读取请求包体
         }
 
         r->read_event_handler = ngx_http_block_reading;
@@ -246,12 +294,17 @@ ngx_http_read_client_request_body_handler(ngx_http_request_t *r)
 {
     ngx_int_t  rc;
 
+    /*
+     * 如果read->timedout为1，则表明读取请求包体超时，此时需要将连接上的timeout置位，
+     * 结束请求并返回408错误响应
+     */
     if (r->connection->read->timedout) {
         r->connection->timedout = 1;
         ngx_http_finalize_request(r, NGX_HTTP_REQUEST_TIME_OUT);
         return;
     }
 
+    /* 读取请求包体 */
     rc = ngx_http_do_read_client_request_body(r);
 
     if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
@@ -259,7 +312,12 @@ ngx_http_read_client_request_body_handler(ngx_http_request_t *r)
     }
 }
 
-
+/*
+ * 读取包体，功能如下:
+ * 1.把客户端和Nginx之间的tcp连接上的内核套接字缓冲区中的字符流读出来
+ * 2.判断字符流是否需要写入文件，以及是否接收到了全部的请求包体
+ * 3.在接收到全部的请求包体后激活用于执行读取请求包体的模块业务逻辑的函数post_handler()
+ */
 static ngx_int_t
 ngx_http_do_read_client_request_body(ngx_http_request_t *r)
 {
@@ -272,6 +330,7 @@ ngx_http_do_read_client_request_body(ngx_http_request_t *r)
     ngx_http_request_body_t   *rb;
     ngx_http_core_loc_conf_t  *clcf;
 
+    /* 获取连接对象和存储包体对象 */
     c = r->connection;
     rb = r->request_body;
 
@@ -796,13 +855,14 @@ ngx_http_discard_request_body_filter(ngx_http_request_t *r, ngx_buf_t *b)
     return NGX_OK;
 }
 
-
+/* 检测Expect头部，并发送响应，激活客户端发送请求体 */
 static ngx_int_t
 ngx_http_test_expect(ngx_http_request_t *r)
 {
     ngx_int_t   n;
     ngx_str_t  *expect;
 
+    /* 如果请求头部中并没有Expect头部或者http版本小于http1.1，则不需要检查该头部，那么直接返回NGX_OK */
     if (r->expect_tested
         || r->headers_in.expect == NULL
         || r->http_version < NGX_HTTP_VERSION_11)
@@ -810,10 +870,12 @@ ngx_http_test_expect(ngx_http_request_t *r)
         return NGX_OK;
     }
 
+    /* 将expect_tested标志位置位，表示执行过Expect头部检测 */
     r->expect_tested = 1;
 
     expect = &r->headers_in.expect->value;
 
+    /* 校验Expect头部的值 */
     if (expect->len != sizeof("100-continue") - 1
         || ngx_strncasecmp(expect->data, (u_char *) "100-continue",
                            sizeof("100-continue") - 1)
@@ -825,6 +887,7 @@ ngx_http_test_expect(ngx_http_request_t *r)
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "send 100 Continue");
 
+    /* 往客户端发送"HTTP/1.1 100 Continue"响应，客户端接收到这个响应后开始发送请求体 */
     n = r->connection->send(r->connection,
                             (u_char *) "HTTP/1.1 100 Continue" CRLF CRLF,
                             sizeof("HTTP/1.1 100 Continue" CRLF CRLF) - 1);

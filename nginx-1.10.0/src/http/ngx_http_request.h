@@ -283,10 +283,20 @@ typedef struct {
 
 typedef void (*ngx_http_client_body_handler_pt)(ngx_http_request_t *r);
 
+/* 读取请求包体的对象 */
 typedef struct {
-    ngx_temp_file_t                  *temp_file;
+    ngx_temp_file_t                  *temp_file;  // 存放http包体的临时文件
+
+    /* 
+     * 接收http包体的缓冲区链表，当包体需要全部存放到内存中而一块ngx_buf_t又无法存放完时，
+     * 这时就需要使用ngx_chain_t链表来存放
+     */
     ngx_chain_t                      *bufs;
+
+    /* 直接接收http包体的缓存 */
     ngx_buf_t                        *buf;
+
+    /* 根据Content-Length和已经接收的包体长度，计算出的还需要接收的包体长度 */
     off_t                             rest;
 #if (NGX_HTTP_V2)
     off_t                             received;
@@ -294,6 +304,7 @@ typedef struct {
     ngx_chain_t                      *free;
     ngx_chain_t                      *busy;
     ngx_http_chunked_t               *chunked;
+    /* http包体接收完毕后执行的回调方法，通常用于执行调用读取包体方法的模块的业务逻辑 */
     ngx_http_client_body_handler_pt   post_handler;
 } ngx_http_request_body_t;
 
