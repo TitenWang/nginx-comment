@@ -2748,8 +2748,15 @@ ngx_http_finalize_connection(ngx_http_request_t *r)
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
+    /* 检查主请求引用计数是否为1，如果大于1，表示还有其他独立的动作，暂时不能结束请求 */
     if (r->main->count != 1) {
 
+        /*
+         * r->discard_body为1，表示当前正在进行丢弃请求包体的动作，还不能关闭请求，那为什么程序会走到
+         * 这里呢?发生这种情况的场景是Nginx在业务层面已经处理完请求了，但是客户端还没有完全将请求包体
+         * 发送完毕，这个时候就需要延迟关闭请求，延迟关闭的时间为从现在算起过clcf->lingering_time / 1000
+         * 时长后。另外，还需要将连接对应的读事件加入到epoll中。
+         */
         if (r->discard_body) {
             r->read_event_handler = ngx_http_discarded_request_body_handler;
             ngx_add_timer(r->connection->read, clcf->lingering_timeout);
@@ -2760,7 +2767,7 @@ ngx_http_finalize_connection(ngx_http_request_t *r)
             }
         }
 
-        ngx_http_close_request(r, 0);
+        ngx_http_close_request(r, 0);  // 将引用计数减1
         return;
     }
 

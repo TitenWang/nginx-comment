@@ -565,7 +565,14 @@ ngx_http_write_request_body(ngx_http_request_t *r)
     return NGX_OK;
 }
 
-
+/*
+ * 第一次启动丢弃包体动作 
+ *     对于http模块而言，放弃接收包体就是简单地不接收包体，但是对于http框架来说并不是
+ * 不接收包体就可以的。因为客户端通常会调用一些阻塞方法来发送包体，如果http框架
+ * 一直不接收包体，会导致实现上不够健壮的客户端认为服务器超时无响应而将连接关闭，
+ * 但是这个时候Nginx可能还在处理这个连接，这样就会导致出错。
+ *     所以http模块放弃接收包体，对http框架来说就是接收包体，但接收后不保存，直接丢弃
+ */
 ngx_int_t
 ngx_http_discard_request_body(ngx_http_request_t *r)
 {
@@ -573,6 +580,14 @@ ngx_http_discard_request_body(ngx_http_request_t *r)
     ngx_int_t     rc;
     ngx_event_t  *rev;
 
+    /*
+     * 1. 检查当前请求是不是子请求，如果是子请求的话，就不用处理包体，因为子请求并不是来自
+     * 客户端的请求，所以不存在处理http请求包体的概念。所以如果是子请求，直接返回NGX_OK表示丢包成功
+     * 2. 检查请求中的discard_body标志位，如果该标志位为1，表示已经在执行丢包的动作，所以这里
+     * 直接返回。
+     * 3. 检查请求中的request_body，如果不是NULL，说明之前模块执行过读取包体的动作，所以这里
+     * 不能再执行丢弃包体的动作了。
+     */
     if (r != r->main || r->discard_body || r->request_body) {
         return NGX_OK;
     }
@@ -584,6 +599,7 @@ ngx_http_discard_request_body(ngx_http_request_t *r)
     }
 #endif
 
+    /* 检测Expect头部，并发送响应，激活客户端发送请求体 */
     if (ngx_http_test_expect(r) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
@@ -592,32 +608,50 @@ ngx_http_discard_request_body(ngx_http_request_t *r)
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, rev->log, 0, "http set discard body");
 
+    /* 
+     * 检查当前连接的读事件是否在定时器中，如果在，则从定时器中删除，因为丢弃包体
+     * 不用考虑超时的问题。但是有一种情况下会将连接读事件重新加入到定时器当中，那就是
+     * 在Nginx已经处理完的请求但是客户端还没有将所有的包体发送完毕，这个时候就需要
+     * 将连接读事件假如定时器，并将定时器超时时间设置为lingering_timeout。这个操作
+     * 是在ngx_http_finalize_connection()函数中完成的，如果结束请求时发现客户端
+     * 还没有发送完请求体，就会将连接读事件加入到定时器中。
+     */
     if (rev->timer_set) {
         ngx_del_timer(rev);
     }
 
+    /* 如果请求头部"Content-Length"指定的长度小于等于0，则直接返回，无需执行丢弃动作 */
     if (r->headers_in.content_length_n <= 0 && !r->headers_in.chunked) {
         return NGX_OK;
     }
 
+    /* 检查接收http请求头部的缓冲区中是否已经预接收到了请求包体 */
     size = r->header_in->last - r->header_in->pos;
 
+    /* 如果头部缓冲区中已经接收到了请求包体，则检查是否已经接收到了全部的请求包体 */
     if (size || r->headers_in.chunked) {
-        rc = ngx_http_discard_request_body_filter(r, r->header_in);
+        rc = ngx_http_discard_request_body_filter(r, r->header_in);  // 计算剩余未接收包体长度
 
         if (rc != NGX_OK) {
             return rc;
         }
 
+        /*
+         * 丢弃包体的时候，会使用请求对象中的r->headers_in.content_length_n来表示剩余未接收包体的长度
+         */
+
+        /* 如果剩余未接收包体长度为0，也就是接收到了所有请求包体，则表示丢弃动作执行成功，返回NGX_OK */
         if (r->headers_in.content_length_n == 0) {
             return NGX_OK;
         }
     }
 
+    /* 读取包体 */
     rc = ngx_http_read_discarded_request_body(r);
 
+    /* ngx_http_read_discarded_request_body返回NGX_OK表示读取包体的动作结束了，后续不用再读取包体了 */
     if (rc == NGX_OK) {
-        r->lingering_close = 0;
+        r->lingering_close = 0;  // 将请求延迟关闭的标志位清零，表示不用再为接收包体而延迟关闭了
         return NGX_OK;
     }
 
@@ -625,6 +659,16 @@ ngx_http_discard_request_body(ngx_http_request_t *r)
         return rc;
     }
 
+    /*
+     *     返回NGX_AGAIN表明需要事件模块多次调度才能完成丢弃所有请求包体的动作，这个时候需要将请求的读事件
+     * 处理函数设置为ngx_http_discarded_request_body_handler，后续该请求有读事件时，调用该函数继续读取包体。
+     * 设置完之后将事件加入到epoll中进行监控。
+     *     除了设置读事件处理函数和监控读事件之外，还需要将请求对象中的discard_body置位，表示当前正在进行
+     * 丢弃包体的动作。同时将主请求的引用计数加1，防止Nginx处理完请求，但是客户端还没有发送完包体导致Nginx
+     * 释放了请求对象，造成严重问题，在这种情况下，Nginx在结束请求时发现当前还正在进行丢弃包体的动作，所以
+     * Nginx会将连接读事件加入到定时器中，并延迟关闭请求，见ngx_http_finalize_connection，如果延迟时间或者
+     * 定时器超时，则不管是否接收到了完整的请求体，也会释放请求，见ngx_http_discarded_request_body_handler。
+     */
     /* rc == NGX_AGAIN */
 
     r->read_event_handler = ngx_http_discarded_request_body_handler;
@@ -633,13 +677,14 @@ ngx_http_discard_request_body(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
+    /* 主请求引用计数加1，置位discard_body标志位 */
     r->count++;
     r->discard_body = 1;
 
     return NGX_OK;
 }
 
-
+/* 如果调用ngx_http_discard_request_body没能一次性读取所有包体，则后续读取包体的动作由该函数执行 */
 void
 ngx_http_discarded_request_body_handler(ngx_http_request_t *r)
 {
@@ -649,9 +694,18 @@ ngx_http_discarded_request_body_handler(ngx_http_request_t *r)
     ngx_connection_t          *c;
     ngx_http_core_loc_conf_t  *clcf;
 
+    /* 获取连接对象和读事件 */
     c = r->connection;
     rev = c->read;
 
+    /*
+     * 如果标志位rev->timedout为1，表示读取包体事件超时，这个时候需要调用ngx_http_finalize_request结束请求。
+     * 在ngx_http_discard_request_body中已经将连接读事件从定时器中移除了，那这里为什么又会有定时器超时呢?
+     * 原因在于如果Nginx处理完了本次请求，准备关闭请求的时候(见ngx_http_finalize_connection())发现当前请求
+     * 还正在执行丢弃包体的动作(可能是客户端还没有将请求包体发送完)，这个时候还不能直接关闭请求，需要等待
+     * 读取并丢弃包体动作结束，但是又不能无限制的等待，所以需要设置请求延迟关闭的时间，并将读事件加入到
+     * 定时器中，如果定时器超时或者延迟关闭的时间到了，这个时候将不再等待，直接关闭请求
+     */
     if (rev->timedout) {
         c->timedout = 1;
         c->error = 1;
@@ -659,9 +713,18 @@ ngx_http_discarded_request_body_handler(ngx_http_request_t *r)
         return;
     }
 
+    /* 
+     * r->lingering_time也是在请求已经处理完，但是客户端还没有完全发送包体的情况下在
+     * ngx_http_finalize_connection()函数中设置的。此时需要检查为接收客户端请求包体而
+     * 延迟关闭请求的时间是否到了(请求在业务层面已经处理完毕)，如果到了，也直接关闭请求
+     * 在ngx_http_finalize_connection()，会将r->lingering_time赋值为执行ngx_http_finalize_connection()
+     * 函数的当前时间加上配置文件中配置的延迟关闭时间，表示从那一刻开始，请求将延迟clcf->lingering_time
+     * 时间关闭，如果时间到了，就关闭请求
+     */
     if (r->lingering_time) {
         timer = (ngx_msec_t) r->lingering_time - (ngx_msec_t) ngx_time();
 
+        /* 检查延迟关闭请求的时间是否到了 */
         if ((ngx_msec_int_t) timer <= 0) {
             r->discard_body = 0;
             r->lingering_close = 0;
@@ -670,18 +733,34 @@ ngx_http_discarded_request_body_handler(ngx_http_request_t *r)
         }
 
     } else {
+        /* 
+         * r->lingering_time为0，表明请求在业务层面还没有执行完毕，因为r->lingering_time只有在
+         * ngx_http_finalize_connection中会设置，执行ngx_http_finalize_connection函数时，请求已经处理完了 
+         */
         timer = 0;
     }
 
+    /* 读取需要丢弃的请求包体 */
     rc = ngx_http_read_discarded_request_body(r);
 
+    /*
+     * ngx_http_read_discarded_request_body返回NGX_OK表示丢弃包体动作成功，可以关闭连接，同时
+     * 将表示正在丢弃包体的标志位清零，这样在执行ngx_http_finalize_connection()时才能关闭请求，
+     * 同时将延迟关闭标志位清零
+     */
     if (rc == NGX_OK) {
         r->discard_body = 0;
         r->lingering_close = 0;
+        /*
+         * 以NGX_DONE为参数调用ngx_http_finalize_request)()，在ngx_http_finalize_request()
+         * 如果检测到参数为NGX_DONE，则会调用ngx_http_finalize_connection()将请求引用计数减1，
+         * 如果引用计数为0，还是会结束请求的。
+         */
         ngx_http_finalize_request(r, NGX_DONE);
         return;
     }
 
+    /* ngx_http_read_discarded_request_body返回值大于等于NGX_HTTP_SPECIAL_RESPONSE表示出错，结束请求 */
     if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
         c->error = 1;
         ngx_http_finalize_request(r, NGX_ERROR);
@@ -690,12 +769,20 @@ ngx_http_discarded_request_body_handler(ngx_http_request_t *r)
 
     /* rc == NGX_AGAIN */
 
+    /*
+     * ngx_http_read_discarded_request_body返回NGX_AGAIN，表明还没有接收到完整的请求包体，需要事件模块
+     * 再次进行调度，以读取完整的请求包体，所以将连接读事件加入到epoll中
+     */
     if (ngx_handle_read_event(rev, 0) != NGX_OK) {
         c->error = 1;
         ngx_http_finalize_request(r, NGX_ERROR);
         return;
     }
 
+    /*
+     * timer不为0，表示请求在业务层面已经处理完毕了，只是为了接收包体而延迟关闭， 这个时候需要将连接对应的
+     * 读事件加入到定时器中，如果定时器超时，则不再等待接收请求包体，直接关闭请求，见本函数开头部分
+     */
     if (timer) {
 
         clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
@@ -706,11 +793,17 @@ ngx_http_discarded_request_body_handler(ngx_http_request_t *r)
             timer = clcf->lingering_timeout;
         }
 
+        /*
+         * 调用ngx_add_timer()将读事件加入到定时器中，如果该事件原来就在定时器中，则会删除原有的定时器，
+         * 并将事件重新加入到定时器中，这个时候相当于定时时长又更新到了clcf->lingering_timeout。
+         * 在请求延迟关闭这段时间内，如果定时器超时会关闭请求，如果事件模块本次调用调度还是没有完成丢弃包体
+         * 动作，则需要更新定时器时长，表示新一轮定时。
+         */
         ngx_add_timer(rev, timer);
     }
 }
 
-
+/* 接收包体 */
 static ngx_int_t
 ngx_http_read_discarded_request_body(ngx_http_request_t *r)
 {
@@ -727,12 +820,22 @@ ngx_http_read_discarded_request_body(ngx_http_request_t *r)
 
     b.temporary = 1;
 
+    /* 循环接收连接对应的内核套接字缓冲区中的字符流 */
     for ( ;; ) {
+        /*
+         * 检查剩余未接收的包体长度，如果为0，表示已经接收到了完整的包体，这个时候将连接
+         * 读事件回调函数设为ngx_http_block_reading，表示再有请求触发读事件时，不做任何
+         * 处理，同时返回NGX_OK，告诉上层已经成功丢弃了所有包体
+         */
         if (r->headers_in.content_length_n == 0) {
             r->read_event_handler = ngx_http_block_reading;
             return NGX_OK;
         }
 
+        /*
+         * r->connection->read->ready为0，表示连接对应的内核套接字缓冲区没有可读的tcp字符流，
+         * 返回NGX_AGAIN，等待事件模块再次调度
+         */
         if (!r->connection->read->ready) {
             return NGX_AGAIN;
         }
@@ -740,17 +843,24 @@ ngx_http_read_discarded_request_body(ngx_http_request_t *r)
         size = (size_t) ngx_min(r->headers_in.content_length_n,
                                 NGX_HTTP_DISCARD_BUFFER_SIZE);
 
+        /* 调用Nginx封装的recv接收内核套接字缓冲区中的字符流 */
         n = r->connection->recv(r->connection, buffer, size);
 
+        /* recv返回NGX_ERROR表示连接出错，置连接中的标志位，返回NGX_OK */
         if (n == NGX_ERROR) {
             r->connection->error = 1;
             return NGX_OK;
         }
 
+        /*
+         * recv返回NGX_AGAIN，表示连接对应的内核套接字缓冲区没有可读的tcp字符流，
+         * 返回NGX_AGAIN，等待事件模块再次调度
+         */
         if (n == NGX_AGAIN) {
             return NGX_AGAIN;
         }
 
+        /* 如果n == 0表示客户端主动关闭了连接，不用再接收包体了，返回NGX_OK */
         if (n == 0) {
             return NGX_OK;
         }
@@ -758,6 +868,7 @@ ngx_http_read_discarded_request_body(ngx_http_request_t *r)
         b.pos = buffer;
         b.last = buffer + n;
 
+        /* 丢弃包体过滤器，即检查是否已经接收到了所有请求包体，如果没有，则计算剩余未接收包体长度 */
         rc = ngx_http_discard_request_body_filter(r, &b);
 
         if (rc != NGX_OK) {
@@ -766,7 +877,7 @@ ngx_http_read_discarded_request_body(ngx_http_request_t *r)
     }
 }
 
-
+/* 丢弃包体过滤器，即检查是否已经接收到了所有请求包体，如果没有，则计算剩余未接收包体长度 */
 static ngx_int_t
 ngx_http_discard_request_body_filter(ngx_http_request_t *r, ngx_buf_t *b)
 {
@@ -840,13 +951,23 @@ ngx_http_discard_request_body_filter(ngx_http_request_t *r, ngx_buf_t *b)
         }
 
     } else {
+        /* 计算缓冲区中已经接收到的包体长度 */
         size = b->last - b->pos;
 
+        /*
+         * size > r->headers_in.content_length_n表明缓冲区中已经接收到了完整的请求头部，
+         * 这个时候，将指向当前待解析的内存的指针后移content_length_n长度，并将请求对象
+         * 中的r->headers_in.content_length_n置为0，表示已经接收到了全部的请求包体
+         */
         if ((off_t) size > r->headers_in.content_length_n) {
             b->pos += (size_t) r->headers_in.content_length_n;
             r->headers_in.content_length_n = 0;
 
         } else {
+            /*
+             * 程序执行到这里，表明目前还没有接收到完整的请求包体，此时将b->pos指针指向
+             * b->last表示已经读取并丢弃的请求体，并计算剩余未接收的包体长度
+             */
             b->pos = b->last;
             r->headers_in.content_length_n -= size;
         }
