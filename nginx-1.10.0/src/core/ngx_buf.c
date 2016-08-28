@@ -122,7 +122,7 @@ ngx_create_chain_of_bufs(ngx_pool_t *pool, ngx_bufs_t *bufs)
     return chain;
 }
 
-
+/* 将in中的所有数据节点挂载到chain中 */
 ngx_int_t
 ngx_chain_add_copy(ngx_pool_t *pool, ngx_chain_t **chain, ngx_chain_t *in)
 {
@@ -179,13 +179,14 @@ ngx_chain_get_free_buf(ngx_pool_t *p, ngx_chain_t **free)
     return cl;
 }
 
-
+/* 向加out节点加入到busy这个chain链表中，然后判断tag是否相等，如果是，则将busy中的节点内容清空后放入到free链表中 */
 void
 ngx_chain_update_chains(ngx_pool_t *p, ngx_chain_t **free, ngx_chain_t **busy,
     ngx_chain_t **out, ngx_buf_tag_t tag)
 {
     ngx_chain_t  *cl;
 
+    /* 将out中的数据加入到busy这个ngx_chain_t链表中尾端 */
     if (*busy == NULL) {
         *busy = *out;
 
@@ -197,6 +198,7 @@ ngx_chain_update_chains(ngx_pool_t *p, ngx_chain_t **free, ngx_chain_t **busy,
 
     *out = NULL;
 
+    /* 将busy中的链表节点清空后加入到free链表中 */
     while (*busy) {
         cl = *busy;
 

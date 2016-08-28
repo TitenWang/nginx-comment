@@ -2771,6 +2771,10 @@ ngx_http_finalize_connection(ngx_http_request_t *r)
         return;
     }
 
+    /*
+     * r->reading_body为1表示当前正在读取请求包体，暂时还不能结束请求，所以需要将
+     * 延迟关闭请求标志位置位
+     */
     if (r->reading_body) {
         r->keepalive = 0;
         r->lingering_close = 1;
@@ -2785,6 +2789,7 @@ ngx_http_finalize_connection(ngx_http_request_t *r)
         return;
     }
 
+    /* 如果需要延迟关闭，则将当前请求设为延迟关闭关闭 */
     if (clcf->lingering_close == NGX_HTTP_LINGERING_ALWAYS
         || (clcf->lingering_close == NGX_HTTP_LINGERING_ON
             && (r->lingering_close
@@ -3423,7 +3428,7 @@ ngx_http_keepalive_handler(ngx_event_t *rev)
     ngx_http_process_request_line(rev);
 }
 
-
+/* 设置请求延迟关闭 */
 static void
 ngx_http_set_lingering_close(ngx_http_request_t *r)
 {
@@ -3435,6 +3440,7 @@ ngx_http_set_lingering_close(ngx_http_request_t *r)
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
+    /*  */
     rev = c->read;
     rev->handler = ngx_http_lingering_close_handler;
 
@@ -3485,6 +3491,7 @@ ngx_http_lingering_close_handler(ngx_event_t *rev)
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0,
                    "http lingering close handler");
 
+    /* 判断事件是否已经超时，如果是则结束请求 */
     if (rev->timedout) {
         ngx_http_close_request(r, 0);
         return;
@@ -3629,6 +3636,7 @@ ngx_http_close_request(ngx_http_request_t *r, ngx_int_t rc)
         ngx_log_error(NGX_LOG_ALERT, c->log, 0, "http request count is zero");
     }
 
+    /* 主请求引用计数减1，表示一个独立动作结束 */
     r->count--;
 
     if (r->count || r->blocked) {

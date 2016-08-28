@@ -25,7 +25,15 @@ static ngx_int_t ngx_http_request_body_length_filter(ngx_http_request_t *r,
 static ngx_int_t ngx_http_request_body_chunked_filter(ngx_http_request_t *r,
     ngx_chain_t *in);
 
-/* 启动接收请求包体 */
+/*
+ * 启动接收请求包体 
+ * 接收包体的整体策略是这样的:用r->request_body->buf缓冲区来直接接收，如果发现该缓冲区满了，则会将其挂载到
+ * r->request_body->bufs缓冲区链表中，如果还未接收完包体，则会写入文件(此时不管是否配置了request_body_in_file_only)，
+ * 然后会重置该缓冲区用于后续剩余未接收包体的接收，如果该缓冲区没有满，则会继续用这个缓冲区接收包体，在部分场景中，
+ * 如读事件未就绪，也会将已经缓存数据更新到r->request_body->bufs缓冲区链表中，此时该部分内容不会写入文件，除非设置了
+ * request_body_in_file_only。另外有一个需要注意的是，不管最后包体存放在内存或者缓冲区中，都可以用r->request_body->bufs
+ * 获取请求包体
+ */
 ngx_int_t
 ngx_http_read_client_request_body(ngx_http_request_t *r,
     ngx_http_client_body_handler_pt post_handler)
@@ -134,6 +142,10 @@ ngx_http_read_client_request_body(ngx_http_request_t *r,
         {
             /* the whole request body may be placed in r->header_in */
 
+            /*
+             * 申请一个新的缓冲区对象ngx_buf_t(未分配存储数据的内存)，然后把头部缓冲区中
+             * 剩余未使用的内存设置给缓冲区对象使用
+             */
             b = ngx_calloc_buf(r->pool);
             if (b == NULL) {
                 rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -142,7 +154,7 @@ ngx_http_read_client_request_body(ngx_http_request_t *r,
 
             /* 包体缓冲区直接指向了头部缓冲区对应的内存 */
             b->temporary = 1;
-            b->start = r->header_in->pos;
+            b->start = r->header_in->pos;  //注意此时rb->buf->start是头部缓冲区的pos开始处内存
             b->pos = r->header_in->pos;
             b->last = r->header_in->last;
             b->end = r->header_in->end;
@@ -339,8 +351,14 @@ ngx_http_do_read_client_request_body(ngx_http_request_t *r)
 
     for ( ;; ) {
         for ( ;; ) {
-            if (rb->buf->last == rb->buf->end) {
 
+            /*
+             * rb->buf->last == rb->buf->end表明当前缓冲区已经使用完毕,则最终会调用ngx_http_write_request_body()
+             * 方法将缓冲区内容写入到文件中，并重置缓冲区用于后续接收包体，不管是否有配置request_body_in_file_only选项。
+             * 如果当前缓冲区并没有满，则会跳过该if语句，继续调用recv接收包体值rb->buf中
+             */
+            if (rb->buf->last == rb->buf->end) {
+                /* 当前缓冲区中有剩余未解析的包体数据，需要将其添加到r->request_body->bufs中 */
                 if (rb->buf->pos != rb->buf->last) {
 
                     /* pass buffer to request body filter chain */
@@ -381,13 +399,16 @@ ngx_http_do_read_client_request_body(ngx_http_request_t *r)
                     return NGX_HTTP_INTERNAL_SERVER_ERROR;
                 }
 
+                /* 重置buf中的pos和last指针，复用rb->buf接收包体 */
                 rb->buf->pos = rb->buf->start;
                 rb->buf->last = rb->buf->start;
             }
 
+            /* 计算rb->buf中的中可用内存空间以及剩余未接收包体长度 */
             size = rb->buf->end - rb->buf->last;
             rest = rb->rest - (rb->buf->last - rb->buf->pos);
 
+            /* 如果缓冲区剩余长度大于剩余包体长度，则指定recv调用长度为两者的小者 */
             if ((off_t) size > rest) {
                 size = (size_t) rest;
             }
@@ -397,26 +418,34 @@ ngx_http_do_read_client_request_body(ngx_http_request_t *r)
             ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
                            "http client request body recv %z", n);
 
+            /* 从连接对应的内核套接字缓冲区中没有读取到tcp字符流 */
             if (n == NGX_AGAIN) {
                 break;
             }
 
+            /* 客户端主动关闭了连接 */
             if (n == 0) {
                 ngx_log_error(NGX_LOG_INFO, c->log, 0,
                               "client prematurely closed connection");
             }
 
+            /* 客户端主动关闭了连接或者连接出错，则返回400错误 */
             if (n == 0 || n == NGX_ERROR) {
                 c->error = 1;
                 return NGX_HTTP_BAD_REQUEST;
             }
 
+            /* 更新buf的last指针和已接收的请求长度 */
             rb->buf->last += n;
             r->request_length += n;
 
+            /* n == rest表示接收到的字符流恰好等于剩余未接收包体的长度，至此包体已完全接收，但缓冲区还没有满 */
             if (n == rest) {
                 /* pass buffer to request body filter chain */
 
+                /*
+                 * out.buf指向rb->buf，调用ngx_http_request_body_filter会将out.buf添加到rb->bufs中
+                 */
                 out.buf = rb->buf;
                 out.next = NULL;
 
@@ -427,10 +456,15 @@ ngx_http_do_read_client_request_body(ngx_http_request_t *r)
                 }
             }
 
+            /*
+             * 在函数ngx_http_request_body_filter中会更新rb->rest的大小，如果接收到了所有包体
+             * 则退出接收包体的循环
+             */
             if (rb->rest == 0) {
                 break;
             }
 
+            /* 如果buf->last小于buf->end，表明当前buf还可以继续存放包体数据 */
             if (rb->buf->last < rb->buf->end) {
                 break;
             }
@@ -439,12 +473,18 @@ ngx_http_do_read_client_request_body(ngx_http_request_t *r)
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
                        "http client request body rest %O", rb->rest);
 
+        /*
+         * 在函数ngx_http_request_body_filter中会更新rb->rest的大小，如果接收到了所有包体
+         * 则退出接收包体的循环
+         */
         if (rb->rest == 0) {
             break;
         }
 
+        /* 如果当前连接对应的读事件还没有就绪，则需要将读事件加入到epoll中，等事件模块再次调度 */
         if (!c->read->ready) {
 
+            /* rb->buf->pos != rb->buf->last表明rb->buf缓冲区中已经有数据了，则将其加入到rb->bufs中 */
             if (r->request_body_no_buffering
                 && rb->buf->pos != rb->buf->last)
             {
@@ -483,7 +523,7 @@ ngx_http_do_read_client_request_body(ngx_http_request_t *r)
     return NGX_OK;
 }
 
-
+/* 将包体对象中的bufs中的数据写入到临时文件中 */
 static ngx_int_t
 ngx_http_write_request_body(ngx_http_request_t *r)
 {
@@ -498,6 +538,9 @@ ngx_http_write_request_body(ngx_http_request_t *r)
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "http write client request body, bufs %p", rb->bufs);
 
+    /*
+     * 如果是第一次执行ngx_http_write_request_body，则会创建用于接收包体的临时文件对象
+     */
     if (rb->temp_file == NULL) {
         tf = ngx_pcalloc(r->pool, sizeof(ngx_temp_file_t));
         if (tf == NULL) {
@@ -521,6 +564,7 @@ ngx_http_write_request_body(ngx_http_request_t *r)
 
         rb->temp_file = tf;
 
+        /* 如果没有请求体，但是配置了request_body_in_file_only，也会创建临时文件 */
         if (rb->bufs == NULL) {
             /* empty body with r->request_body_in_file_only */
 
@@ -535,10 +579,12 @@ ngx_http_write_request_body(ngx_http_request_t *r)
         }
     }
 
+    /* 如果rb->bufs中并没有挂载ngx_buf_t对象，则直接返回表示写入文件动作成功 */
     if (rb->bufs == NULL) {
         return NGX_OK;
     }
 
+    /* 将rb->bufs中的数据写入到文件当中 */
     n = ngx_write_chain_to_temp_file(rb->temp_file, rb->bufs);
 
     /* TODO: n == 0 or not complete and level event */
@@ -547,10 +593,12 @@ ngx_http_write_request_body(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
+    /* 更新文件偏移 */
     rb->temp_file->offset += n;
 
     /* mark all buffers as written */
 
+    /* 把bufs中的所有chain数据节点都放入r->pool->chain链表中，通过pool统一释放他们 */
     for (cl = rb->bufs; cl; /* void */) {
 
         cl->buf->pos = cl->buf->last;
@@ -1044,6 +1092,7 @@ ngx_http_request_body_length_filter(ngx_http_request_t *r, ngx_chain_t *in)
     ngx_chain_t               *cl, *tl, *out, **ll;
     ngx_http_request_body_t   *rb;
 
+    /* 初次执行该函数，则将rest设置为r->headers_in.content_length_n */
     rb = r->request_body;
 
     if (rb->rest == -1) {
@@ -1056,12 +1105,14 @@ ngx_http_request_body_length_filter(ngx_http_request_t *r, ngx_chain_t *in)
     out = NULL;
     ll = &out;
 
+    /* 遍历in中的所有数据节点(应该就只有rb->buf)，将它们连接在一起放在out头中 */
     for (cl = in; cl; cl = cl->next) {
 
         if (rb->rest == 0) {
             break;
         }
 
+        /* 从rb->free这个chain链表中获取一个chain节点 */
         tl = ngx_chain_get_free_buf(r->pool, &rb->free);
         if (tl == NULL) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -1079,17 +1130,22 @@ ngx_http_request_body_length_filter(ngx_http_request_t *r, ngx_chain_t *in)
         b->end = cl->buf->end;
         b->flush = r->request_body_no_buffering;
 
+        /* buf中的字符流长度 */
         size = cl->buf->last - cl->buf->pos;
 
+        /* 
+         * 如果buf中的字符流长度小于剩余未接收的包体长度，则将buf->pos置为buf->last
+         * 用于让该缓冲区在后续接收包体中重用，并更新剩余未接收包体长度
+         */
         if ((off_t) size < rb->rest) {
-            cl->buf->pos = cl->buf->last;
+            cl->buf->pos = cl->buf->last;  // 这里将buf->pos设置为buf->last，表明下次从当前last处开始存放包体
             rb->rest -= size;
 
-        } else {
-            cl->buf->pos += (size_t) rb->rest;
+        } else {  //程序进入else分支表明已经接收到了所有的包体数据
+            cl->buf->pos += (size_t) rb->rest;  // pos指向包体数据尾端
             rb->rest = 0;
-            b->last = cl->buf->pos;
-            b->last_buf = 1;
+            b->last = cl->buf->pos;  // b->last也指向包体数据尾端
+            b->last_buf = 1;  // last_buf标志位置位，表示最后一个用于接收包体的buf
         }
 
         *ll = tl;
@@ -1098,6 +1154,10 @@ ngx_http_request_body_length_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
     rc = ngx_http_top_request_body_filter(r, out);
 
+    /* 
+     * 向加out节点加入到busy这个chain链表中，然后判断tag是否相等，如果是，
+     * 则将busy中的节点内容清空后放入到free链表中 
+     */
     ngx_chain_update_chains(r->pool, &rb->free, &rb->busy, &out,
                             (ngx_buf_tag_t) &ngx_http_read_client_request_body);
 
@@ -1257,7 +1317,13 @@ ngx_http_request_body_chunked_filter(ngx_http_request_t *r, ngx_chain_t *in)
     return rc;
 }
 
-
+/*
+ * 从这个函数的实现可以看出，无论最终请求包体存放在内存或者文件中，都可以通过r->request_body->bufs中获取
+ * 因为通过ngx_chain_add_copy已经将r->request_body->buf中的数据挂载到了r->request_body->bufs链表中，后续
+ * 处理中如果发现r->request_body->buf已经满了，则不管是否配置了request_body_in_file_only都会将数据写入到
+ * 文件中。如果后续接收完请求包体，并存放在了文件中，也会将文件中的信息设置到r->request_body->bufs中，这样
+ * 的话，无论最终请求包体存放在内存或者文件中，都可以通过r->request_body->bufs中获取了。
+ */
 ngx_int_t
 ngx_http_request_body_save_filter(ngx_http_request_t *r, ngx_chain_t *in)
 {
@@ -1294,17 +1360,23 @@ ngx_http_request_body_save_filter(ngx_http_request_t *r, ngx_chain_t *in)
 #endif
 
     /* TODO: coalesce neighbouring buffers */
-
+    /* 将in中的所有buf挂载到rb->bufs链表中 */
     if (ngx_chain_add_copy(r->pool, &rb->bufs, in) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
+    /* request_body_no_buffering为1表示不缓存请求包体 */
     if (r->request_body_no_buffering) {
         return NGX_OK;
     }
 
+    /* 如果还有剩余未接收的请求包体 */
     if (rb->rest > 0) {
 
+        /*
+         * 如果还有剩余未接收的请求包体，并且rb->buf已经缓冲满了，则不管是否配置了request_body_in_file_only选项
+         * 都会将buf中的数据写入到文件当中，因为后续接收包体还是会使用rb->buf来直接接收包体，即复用rb->buf
+         */
         if (rb->buf && rb->buf->last == rb->buf->end
             && ngx_http_write_request_body(r) != NGX_OK)
         {
@@ -1316,8 +1388,13 @@ ngx_http_request_body_save_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
     /* rb->rest == 0 */
 
+    /*
+     * 程序执行到这里说明已经接收完了所有的请求包体
+     * 判断中的rb->temp_file不为NULL，表明是之前rb->buf已经用完了，所以会写入文件中
+     */
     if (rb->temp_file || r->request_body_in_file_only) {
 
+        /* 将此次接收到的包体(存放在rb->bufs中)写入到文件中 */
         if (ngx_http_write_request_body(r) != NGX_OK) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
@@ -1333,10 +1410,14 @@ ngx_http_request_body_save_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
             ngx_memzero(b, sizeof(ngx_buf_t));
 
-            b->in_file = 1;
+            b->in_file = 1;  // 表明这块缓冲区对象中指向的内存是在文件中
             b->file_last = rb->temp_file->file.offset;
             b->file = &rb->temp_file->file;
 
+            /*
+             * 将rb->bufs指向存放着包体的临时文件，这样的话即使最终包体存放在文件中，
+             * 也可以通过rb->bufs获取 
+             */
             rb->bufs = cl;
         }
     }
