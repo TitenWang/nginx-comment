@@ -380,15 +380,15 @@ typedef void (*ngx_http_event_handler_pt)(ngx_http_request_t *r);
 struct ngx_http_request_s {
     uint32_t                          signature;         /* "HTTP" */
 
-    ngx_connection_t                 *connection;
+    ngx_connection_t                 *connection;  // 请求对应的客户端连接
 
-    void                            **ctx;
-    void                            **main_conf;
-    void                            **srv_conf;
-    void                            **loc_conf;
+    void                            **ctx;  // 指向存放所有http模块上下文结构体的指针数组
+    void                            **main_conf;  // 指向请求对应的存放main级别配置项结构体的指针数组
+    void                            **srv_conf;  // 指向请求对应的存放srv级别的配置项结构体的指针数组
+    void                            **loc_conf;  // 指向请求对应的存放loc级别的配置项结构体的指针数组
 
-    ngx_http_event_handler_pt         read_event_handler;
-    ngx_http_event_handler_pt         write_event_handler;
+    ngx_http_event_handler_pt         read_event_handler;  // 请求对应的读事件处理函数(在连接上读事件发生时被调用)
+    ngx_http_event_handler_pt         write_event_handler;  // 请求对应的写事件处理函数(在连接上写事件发生时被调用)
 
 #if (NGX_HTTP_CACHE)
     ngx_http_cache_t                 *cache;
@@ -398,20 +398,33 @@ struct ngx_http_request_s {
     ngx_array_t                      *upstream_states;
                                          /* of ngx_http_upstream_state_t */
 
-    ngx_pool_t                       *pool;
+    ngx_pool_t                       *pool;  // 请求对应的内存池，区别连接对应的内存池
 
     /* 指向用于接收、缓存客户端发来的字节流的缓冲区，和ngx_connectoin_t结构体中的buffer字段指向的空间一样 */
     ngx_buf_t                        *header_in;
 
+    /*
+     * ngx_http_process_request_headers方法在接收、解析完请求头部后，会把解析到的每一个http头部加入到
+     * 加入到headers_in的headers链表中，并构造headers_in中的其他成员
+     */
     ngx_http_headers_in_t             headers_in;
+
+    /*
+     * http模块会把想要发送的响应头部信息放到headers_out中，期望http框架会把headers_out中的成员序列化为
+     * http响应头，然后发送给客户端
+     */
     ngx_http_headers_out_t            headers_out;
 
+    /* 用于接收http请求包体的对象 */
     ngx_http_request_body_t          *request_body;
 
-    time_t                            lingering_time;
-    time_t                            start_sec;
-    ngx_msec_t                        start_msec;
+    time_t                            lingering_time;  // 延迟关闭连接的时长
+    time_t                            start_sec;  // 请求初始化的时间(单位s)
+    ngx_msec_t                        start_msec;  // 请求初始化的时间(单位ms)
 
+    /*
+     * 以下9个成员都是调用ngx_http_process_request_line方法时解析出来的请求行信息
+     */
     ngx_uint_t                        method;
     ngx_uint_t                        http_version;
 
@@ -424,15 +437,37 @@ struct ngx_http_request_s {
     ngx_str_t                         method_name;
     ngx_str_t                         http_protocol;
 
+    /*
+     * out成员中存放的是发送给客户端的http响应。这个成员在什么情况下会用到呢，就是在http响应头或者响应体
+     * 过大而导致无法一次性将其全部发送给客户端时，就会用out成员存放剩余未发送给客户端的响应内容。
+     */
     ngx_chain_t                      *out;
+
+    /*
+     * 当前请求可能是用户发送过来的请求，也可能是派生出来的子请求，而main成员始终指向一系列相关的派生子请求
+     * 的原始请求，一般可以通过main和当前请求的r的地址是否相等来判断当前请求是否是客户端发来的原始请求
+     */
     ngx_http_request_t               *main;
-    ngx_http_request_t               *parent;
-    ngx_http_postponed_request_t     *postponed;
-    ngx_http_post_subrequest_t       *post_subrequest;
+    ngx_http_request_t               *parent;  // 当前请求的父请求
+    ngx_http_postponed_request_t     *postponed;  // 存放当前请求的子请求或者当前请求产生的数据
+    ngx_http_post_subrequest_t       *post_subrequest;  // 子请求结束时会调用里面的handler方法
+
+    /* 原始请求的所有子请求都会就爱入到这个单链表，只有原始请求的该成员才有效 */
     ngx_http_posted_request_t        *posted_requests;
 
+    /* 表示请求下次应当执行的阶段处理方法在r->phase_engine.handlers数组中的下标 */
     ngx_int_t                         phase_handler;
+
+    /*
+     * 表示NGX_HTTP_CONTENT_PHASE阶段提供给http模块处理请求的一种方式,
+     * content_handler指向http模块实现的NGX_HTTP_CONTENT_PHASE阶段的请求处理方法
+     */
     ngx_http_handler_pt               content_handler;
+
+    /*
+     * 在NGX_HTTP_ACCESS_PHASE阶段需要判断请求是否具有访问权限时，通过access_code来传递http
+     * 模块的handler方法的返回值，如果access_code为0表示具有访问权限，否则则不具备访问权限。
+     */
     ngx_uint_t                        access_code;
 
     /*
@@ -450,17 +485,17 @@ struct ngx_http_request_s {
     u_char                           *captures_data;
 #endif
 
-    size_t                            limit_rate;
-    size_t                            limit_rate_after;
+    size_t                            limit_rate;  // 发送响应的最大速率
+    size_t                            limit_rate_after;  // 发送limit_rate_after长度的响应后开始限速
 
     /* used to learn the Apache compatible response length without a header */
-    size_t                            header_size;
+    size_t                            header_size;  // 响应头的大小，包括响应行
 
-    off_t                             request_length;
+    off_t                             request_length;  // http请求的全部长度，包括请求包体
 
     ngx_uint_t                        err_status;
 
-    ngx_http_connection_t            *http_connection;
+    ngx_http_connection_t            *http_connection; // 当前请求对应的七层连接对象
 #if (NGX_HTTP_V2)
     ngx_http_v2_stream_t             *stream;
 #endif
@@ -469,12 +504,20 @@ struct ngx_http_request_s {
 
     ngx_http_cleanup_t               *cleanup;
 
+    /*
+     * 当前请求的引用计数。该成员只在原始请求中有效。每当对请求(包括原始请求和其派生出的子请求、孙子请求)
+     * 执行一个新的独立操作时，都需要对原始请求的引用计数加1，防止请求处理出错。
+     */
     unsigned                          count:16;
     unsigned                          subrequests:8;
+
+    /* 阻塞标志位，仅有aio使用 */
     unsigned                          blocked:8;
 
+    /* aio为1表示当前请求正在进行异步文件io */
     unsigned                          aio:1;
 
+    /* 表示当前请求状态 */
     unsigned                          http_state:4;
 
     /* URI with "/." and on Win32 with "//" */
@@ -494,9 +537,10 @@ struct ngx_http_request_s {
     unsigned                          add_uri_to_alias:1;
     unsigned                          valid_location:1;
     unsigned                          valid_unparsed_uri:1;
-    unsigned                          uri_changed:1;
-    unsigned                          uri_changes:4;
+    unsigned                          uri_changed:1;  // URI是否被rewrite重写的标志位
+    unsigned                          uri_changes:4;  // URI被rewrite重写的次数(NGX_HTTP_REWRITE_PHASE阶段)
 
+    /* 请求包体存放策略标志位 */
     unsigned                          request_body_in_single_buf:1;
     unsigned                          request_body_in_file_only:1;
     unsigned                          request_body_in_persistent_file:1;
@@ -505,8 +549,8 @@ struct ngx_http_request_s {
     unsigned                          request_body_file_log_level:3;
     unsigned                          request_body_no_buffering:1;
 
-    unsigned                          subrequest_in_memory:1;
-    unsigned                          waited:1;
+    unsigned                          subrequest_in_memory:1;  // 子请求产生的数据是否存放在内存中的标志位
+    unsigned                          waited:1;//子请求提前完成时是否置done的标志位，如果为1，则提前完成时done立即置位
 
 #if (NGX_HTTP_CACHE)
     unsigned                          cached:1;
@@ -537,8 +581,8 @@ struct ngx_http_request_s {
     unsigned                          pipeline:1;
     unsigned                          chunked:1;
     unsigned                          header_only:1;
-    unsigned                          keepalive:1;
-    unsigned                          lingering_close:1;
+    unsigned                          keepalive:1;  // 为1表示当前请求是keeplive请求
+    unsigned                          lingering_close:1;  // 延迟关闭请求标志位
     unsigned                          discard_body:1;
     unsigned                          reading_body:1;
     unsigned                          internal:1;
@@ -547,13 +591,13 @@ struct ngx_http_request_s {
     unsigned                          post_action:1;
     unsigned                          request_complete:1;
     unsigned                          request_output:1;
-    unsigned                          header_sent:1;
+    unsigned                          header_sent:1;  // 表示响应头是否已经发送的标志位
     unsigned                          expect_tested:1;
     unsigned                          root_tested:1;
     unsigned                          done:1;
     unsigned                          logged:1;
 
-    unsigned                          buffered:4;
+    unsigned                          buffered:4;  // 表示缓冲区中是否有带发送内容的标志位
 
     unsigned                          main_filter_need_in_memory:1;
     unsigned                          filter_need_in_memory:1;
@@ -570,6 +614,7 @@ struct ngx_http_request_s {
 
     /* used to parse HTTP headers */
 
+    /* Nginx中状态机来解析http请求时用state来表示当前的解析状态 */
     ngx_uint_t                        state;
 
     ngx_uint_t                        header_hash;

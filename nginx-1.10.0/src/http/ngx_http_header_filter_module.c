@@ -146,7 +146,10 @@ ngx_http_header_out_t  ngx_http_headers_out[] = {
     { ngx_null_string, 0 }
 };
 
-
+/*
+ * 该函数是头部过滤模块链表中最后一个头部过滤模块的处理方法，该方法会根据http规则
+ * 将请求对象中的headers_out成员中的内容序列化，然后发送给客户端
+ */
 static ngx_int_t
 ngx_http_header_filter(ngx_http_request_t *r)
 {
@@ -167,20 +170,28 @@ ngx_http_header_filter(ngx_http_request_t *r)
 #endif
     u_char                     addr[NGX_SOCKADDR_STRLEN];
 
+    /* 检查header_sent标志位，如果为1，表示响应头已经发送过了 */
     if (r->header_sent) {
         return NGX_OK;
     }
 
+    /* 因为该函数最后会调用ngx_http_write_filter方法发送响应头，所以这里将该标志置位 */
     r->header_sent = 1;
 
+    /*
+     * 检查当前请求是不是来自客户端的原始请求，如果当前请求只是一个子请求的话，是不存在
+     * 发送http响应头的概念的
+     */
     if (r != r->main) {
         return NGX_OK;
     }
 
+    /* 如果http版本小于1.0。则同样不需要发送响应头 */
     if (r->http_version < NGX_HTTP_VERSION_10) {
         return NGX_OK;
     }
 
+    /* 如果请求方法是NGX_HTTP_HEAD，则只发送响应头，不会发送响应体 */
     if (r->method == NGX_HTTP_HEAD) {
         r->header_only = 1;
     }
@@ -194,6 +205,11 @@ ngx_http_header_filter(ngx_http_request_t *r)
             r->headers_out.last_modified = NULL;
         }
     }
+
+    /*
+     * 下面开始根据请求对象中headers_out成员中的错误码，http头部字符串，计算出如果把响应行
+     * 和响应头序列化为一个字符串需要多少字节
+     */        
 
     len = sizeof("HTTP/1.x ") - 1 + sizeof(CRLF) - 1
           /* the end of the header */
@@ -438,6 +454,11 @@ ngx_http_header_filter(ngx_http_request_t *r)
                + sizeof(CRLF) - 1;
     }
 
+    /*
+     * 程序执行到这里，已经计算出了序列化响应行和响应头部总共需要的内存大小，下面就会用计算得到的
+     * 大小申请内存，然后根据http规则将响应行和响应头部序列化到内存中
+     */
+    
     b = ngx_create_temp_buf(r->pool, len);
     if (b == NULL) {
         return NGX_ERROR;
@@ -611,8 +632,10 @@ ngx_http_header_filter(ngx_http_request_t *r)
     /* the end of HTTP header */
     *b->last++ = CR; *b->last++ = LF;
 
+    /* 计算响应行的大小 */
     r->header_size = b->last - b->pos;
 
+    /* 如果只发送响应头而不需要发送响应体，则将缓冲区的last_buf标志位置位 */
     if (r->header_only) {
         b->last_buf = 1;
     }
@@ -620,6 +643,17 @@ ngx_http_header_filter(ngx_http_request_t *r)
     out.buf = b;
     out.next = NULL;
 
+    /*
+     * 调用ngx_http_write_filter发送响应头 
+     * 事实上，在发送http响应包体的时候也是通过该方法发送的。当无法一次性将缓冲区的内容发送完毕时，
+     * ngx_http_write_filter方法会返回NGX_AGAIN，同时会将剩余未发送的响应内容存放在请求对象中的out
+     * 成员中。也就是说，此时发送响应头部的ngx_http_header_filter方法也会返回NGX_AGAIN，那么ngx_http_send_header
+     * 也就会返回NGX_AGAIN。通常ngx_http_send_header方法会被某个模块的content_handler方法调用，那么此时
+     * 调用ngx_http_send_header的content_handler方法也会返回NGX_AGAIN，在ngx_http_core_content_phase方法中
+     * 会用content_handler方法返回值调用ngx_http_finalize_request。在ngx_http_finalize_request中如果
+     * 发现content_handler返回值为NGX_AGAIN，则又会将连接对应的写事件加入到epoll中和定时器中，这样就
+     * 可以等待事件模块调度继续发送响应内容。
+     */
     return ngx_http_write_filter(r, &out);
 }
 

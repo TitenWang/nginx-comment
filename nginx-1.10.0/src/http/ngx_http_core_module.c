@@ -2097,6 +2097,21 @@ ngx_http_send_response(ngx_http_request_t *r, ngx_uint_t status,
 }
 
 
+/*
+ * 对于各个http模块而言，绝大多数情况下发送http响应的时候就是这个请求结束的时候。
+ */
+
+/*
+ *     ngx_http_send_header()负责构造响应行和响应头部，同时会把他们发送给客户端，发送响应头部的时候，
+ * 采用了流水线式的过滤模块思想，即通过统一的接口，让各个感兴趣的http模块加入到ngx_http_send_header
+ * 方法中，并且每个过滤模块定义的过滤方法通过ngx_http_next_header_filter指针连接成了一个链表，这样，
+ * 在调用ngx_http_send_header方法时，就会依次调用所有过滤模块来对响应行和响应头进行处理。其中，链表
+ * 最后一个过滤模块的过滤方法会负责向客户端发送处理完毕的响应行和响应头部。
+ *     调用ngx_http_send_header方法时，最后一个头部过滤模块叫做ngx_http_header_filter_module模块，
+ * 之前的头部过滤模块会根据模块特性去修改请求对象ngx_http_request_t结构体中headers_out成员里的内容。
+ * 而最后一个头部过滤模块ngx_http_header_filter_module提供的ngx_http_header_filter则会根据http规则
+ * 把headers_out成员中的变量序列化成字符流，并发送出去。
+ */
 ngx_int_t
 ngx_http_send_header(ngx_http_request_t *r)
 {
@@ -2104,6 +2119,10 @@ ngx_http_send_header(ngx_http_request_t *r)
         return NGX_OK;
     }
 
+    /* 
+     * 检查请求对象中的header_sent标志位，如果标志位为1，表示该请求的响应头部
+     * 已经发送过了，不用在向下执行了 
+     */
     if (r->header_sent) {
         ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
                       "header already sent");
@@ -2115,6 +2134,7 @@ ngx_http_send_header(ngx_http_request_t *r)
         r->headers_out.status_line.len = 0;
     }
 
+    /* 调用所有头部过滤模块产生响应头，并发送响应头给客户端 */
     return ngx_http_top_header_filter(r);
 }
 
