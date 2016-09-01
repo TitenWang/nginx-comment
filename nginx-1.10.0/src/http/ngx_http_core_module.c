@@ -2138,7 +2138,12 @@ ngx_http_send_header(ngx_http_request_t *r)
     return ngx_http_top_header_filter(r);
 }
 
-
+/*
+ * ngx_http_output_filter()用来发送响应包体，第二个参数存放的就是此次待发送的响应
+ * 用于过滤http响应包体的模块将会以ngx_http_next_body_filter作为链表指针连接成一个流水线，
+ * 在ngx_http_output_filter()函数中会依次调用所有过滤模块的过滤包体方法，最后一个过滤模块
+ * 的处理方法会负责发送响应包体，该方法为ngx_http_write_filter()。
+ */
 ngx_int_t
 ngx_http_output_filter(ngx_http_request_t *r, ngx_chain_t *in)
 {
@@ -2152,6 +2157,7 @@ ngx_http_output_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
     rc = ngx_http_top_body_filter(r, in);
 
+    /* 响应包体过滤链中的任一模块处理方法返回NGX_ERROR，则连接出错，将c->error标志位置位 */
     if (rc == NGX_ERROR) {
         /* NGX_ERROR may be returned by any filter */
         c->error = 1;
