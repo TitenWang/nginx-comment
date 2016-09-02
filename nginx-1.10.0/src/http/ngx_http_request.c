@@ -2836,7 +2836,11 @@ ngx_http_set_write_handler(ngx_http_request_t *r)
     return NGX_OK;
 }
 
-
+/*
+ * 当由于响应头部或者响应包体过大而无法一次性将它们发送完毕时，Nginx会将连接对应的写事件加入到
+ * epoll中，此时写事件的回调函数就会设置为ngx_http_writer()，后续剩余响应的发送都会通过这个函数
+ * 来完成。
+ */
 static void
 ngx_http_writer(ngx_http_request_t *r)
 {
@@ -2845,27 +2849,47 @@ ngx_http_writer(ngx_http_request_t *r)
     ngx_connection_t          *c;
     ngx_http_core_loc_conf_t  *clcf;
 
+    /* 获取连接和写事件 */
     c = r->connection;
     wev = c->write;
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, wev->log, 0,
                    "http writer handler: \"%V?%V\"", &r->uri, &r->args);
 
+    /* 获取ngx_http_core_module模块的配置项结构体 */
     clcf = ngx_http_get_module_loc_conf(r->main, ngx_http_core_module);
 
+    /* 
+     * 检查写事件的timeout标志位，如果timeout标志位为1，则表明当前事件已经超时，这时候有两种可能性:
+     * 1. 由于网络异常或者客户端长时间不接收响应，导致真正的发送响应超时。
+     * 2. 由于上一次发送响应的发送速率过快，超过了请求的limit_rate速率上限，而在ngx_http_write_filter
+     * 中如果需要限速则会设置一个超时时间将写事件加入到定时器中。此时这里的超时是由于限速导致的，并不是
+     * 真正的超时。
+     * 那么如何判断是否是真正的超时还是因为限速引起的呢?这个时候可以通过写事件中的delayed标志位进行判断
+     * 如果是由于限速而将当前写事件加入到定时器中，那么一定会将delayed标志位置位。所以这里可以通过该标志
+     * 进行判断，如果delayed为1，则是由于限速引起的超时，如果delayed为0，表明是真正超时了。
+     */
     if (wev->timedout) {
-        if (!wev->delayed) {
+        if (!wev->delayed) {  // 真正超时，因为wev->delayed为0
             ngx_log_error(NGX_LOG_INFO, c->log, NGX_ETIMEDOUT,
                           "client timed out");
-            c->timedout = 1;
+            c->timedout = 1;  // 将连接对象中的超时标志位置位，此时是真正的连接超时
 
-            ngx_http_finalize_request(r, NGX_HTTP_REQUEST_TIME_OUT);
+            ngx_http_finalize_request(r, NGX_HTTP_REQUEST_TIME_OUT);  // 向客户端发送408错误码
             return;
         }
 
+        /*
+         * 程序执行到这里，表明此次超时是由于限速引起的。因此需要将timeout和delayed标志位都清零
+         */
         wev->timedout = 0;
         wev->delayed = 0;
 
+        /*
+         * 虽然限速引起了超时，但是这个时候写事件并没有就绪，也就是说此时还不能往客户端发送响应，
+         * 这个时候需要将当前写事件加入到定时器中，超时时间为send_timeout，此时加入定时器和限速
+         * 功能无关，并且会将写事件加入到epoll中等待下次调度
+         */
         if (!wev->ready) {
             ngx_add_timer(wev, clcf->send_timeout);
 
@@ -2878,6 +2902,12 @@ ngx_http_writer(ngx_http_request_t *r)
 
     }
 
+    /* 程序执行到这里表明写事件是就绪的，可以往客户端发送响应 */
+
+    /*
+     * 如果写事件的delayed标志位为1或者当前请求正在进行异步操作，则表明需要延迟发送响应，
+     * 所以将写事件加入到epoll中等待调度
+     */
     if (wev->delayed || r->aio) {
         ngx_log_debug0(NGX_LOG_DEBUG_HTTP, wev->log, 0,
                        "http writer delayed");
@@ -2889,17 +2919,35 @@ ngx_http_writer(ngx_http_request_t *r)
         return;
     }
 
+    /*
+     * 调用ngx_http_output_filter()方法发送响应，其中第二个参数(即本次需要发送的缓冲区)为NULL，
+     * 表明需要调用各个包体过滤模块处理请求对象的out缓冲区中剩余的内容，最后调用ngx_http_write_filter
+     * 方法把响应发送出去。如果在ngx_http_write_filter方法中还是没有发送完响应，则在结束请求函数
+     * ngx_http_finalize_request中又会将写事件加入到epoll中，如果没有限速也会加入到定时器中。如果
+     * 在ngx_http_write_filter方法中判断需要限速，则在ngx_http_finalize_request中不会将写事件加入到
+     * 定时器中，因为在ngx_http_write_filter中判断出需要限速后，就会计算超时时间并将写事件加入到
+     * 定时器中。
+     */
     rc = ngx_http_output_filter(r, NULL);
 
     ngx_log_debug3(NGX_LOG_DEBUG_HTTP, c->log, 0,
                    "http writer output filter: %d, \"%V?%V\"",
                    rc, &r->uri, &r->args);
 
+    /*
+     * 如果发送响应过程中任一一个模块返回NGX_ERROR，则表明连接出错，则以NGX_ERROR调用
+     * ngx_http_finalize_request()结束请求 */
     if (rc == NGX_ERROR) {
         ngx_http_finalize_request(r, rc);
         return;
     }
 
+    /*
+     * 执行完发送响应的动作后，检查请求对象中的buffered及postponed标志位，如果任一一个
+     * 不为0，则表明没有发送完out链表中的响应内容，需要再次进行调度。另外，如果main指针
+     * 指向自身，表明当前请求是原始请求，此时再检查连接对象中的buffered标志位，如果
+     * buffered标志位不为0，同样表明没有发送完out缓冲区链表中的响应，此时需要再进行调度
+     */
     if (r->buffered || r->postponed || (r == r->main && c->buffered)) {
 
         if (!wev->delayed) {
@@ -2913,6 +2961,12 @@ ngx_http_writer(ngx_http_request_t *r)
         return;
     }
 
+    /*
+     * 程序执行到这里表明当前响应已经发送完毕，需要结束请求了。此时将连接对应的写事件
+     * 回调函数设置为ngx_http_request_empty_handler()，此时如果这个请求对应的连接上
+     * 再有可写事件，将不做任何处理，然后调用ngx_http_finalize_request结束请求
+     */
+    
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, wev->log, 0,
                    "http writer done: \"%V?%V\"", &r->uri, &r->args);
 
