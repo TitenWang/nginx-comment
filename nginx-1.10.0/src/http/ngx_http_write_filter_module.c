@@ -276,7 +276,7 @@ ngx_http_write_filter(ngx_http_request_t *r, ngx_chain_t *in)
          */
         if (limit <= 0) {
             c->write->delayed = 1;  // 将写事件中的延迟发送标志位置位
-            delay = (ngx_msec_t) (- limit * 1000 / r->limit_rate + 1);
+            delay = (ngx_msec_t) (- limit * 1000 / r->limit_rate + 1);  // 计算延迟发送时间
 
             /*
              * 将写事件加入到定时器中，这个步骤会将之前在ngx_http_finalize_request中加入的定时器移除，
@@ -331,29 +331,34 @@ ngx_http_write_filter(ngx_http_request_t *r, ngx_chain_t *in)
         return NGX_ERROR;
     }
 
+    /*
+     * 发送完响应后再次检查请求的r->limit_rate标志位，如果limit_rata标志位为0，则不需要限速，
+     * 如果limit_rate标志位大于0，则表示需要进行限速
+     */
     if (r->limit_rate) {
 
-        nsent = c->sent;
+        nsent = c->sent;  // 当前连接已经发送的字节数
 
-        if (r->limit_rate_after) {
+        if (r->limit_rate_after) {  // limit_rate_after大于0表明在发送了limit_rate_after字节响应后才触发限速
 
-            sent -= r->limit_rate_after;
+            sent -= r->limit_rate_after;  // sent原为此次发送响应之前已经发送的字节数
             if (sent < 0) {
                 sent = 0;
             }
 
-            nsent -= r->limit_rate_after;
+            nsent -= r->limit_rate_after;  // nsent原为此次发送响应之后连接上已经发送的字节数
             if (nsent < 0) {
                 nsent = 0;
             }
         }
 
+        /* nsent-sent为此次发送的响应内容的字节数，用这个计算是否需要进行限速，如果需要，则计算限速时长 */
         delay = (ngx_msec_t) ((nsent - sent) * 1000 / r->limit_rate);
 
         if (delay > 0) {
             limit = 0;
-            c->write->delayed = 1;
-            ngx_add_timer(c->write, delay);
+            c->write->delayed = 1;  // 延迟发送相应标志位置位
+            ngx_add_timer(c->write, delay);  // 过delay秒后再次触发发送响应操作
         }
     }
 

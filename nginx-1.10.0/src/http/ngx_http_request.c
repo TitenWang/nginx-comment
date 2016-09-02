@@ -2628,7 +2628,15 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
 
         return;
     }
-
+    
+    /*
+     * 当ngx_http_core_content_phase这个checker方法中调用r->content_handler返回NGX_AGAIN时，
+     * 会以NGX_AGAIN为参数调用ngx_http_finalize_request()，此时就会走到这里，为什么呢?
+     * r->content_handler中会调用发送响应头部或者响应包体的方法，如果当次没有发送完响应，则会返回
+     * NGX_AGAIN,那么下面的四个标志位中肯定至少会有一个标志位不为0，表明仍有响应待发送。
+     * 这个时候就会调用ngx_http_set_write_handler方法将连接对应的写事件加入到epoll中，如果
+     * ngx_http_write_filter中并没有检测到限速，则也会将写事件加入到定时器中。
+     */
     if (r->buffered || c->buffered || r->postponed || r->blocked) {
 
         if (ngx_http_set_write_handler(r) != NGX_OK) {
@@ -2815,19 +2823,30 @@ ngx_http_set_write_handler(ngx_http_request_t *r)
     r->read_event_handler = r->discard_body ?
                                 ngx_http_discarded_request_body_handler:
                                 ngx_http_test_reading;
+    /* 将请求写事件处理函数回调设为ngx_http_writer，用于后续发送响应 */
     r->write_event_handler = ngx_http_writer;
 
     wev = r->connection->write;
 
+    /*
+     * 如果当前写事件是就绪的，但由于需要延迟发送响应，则后面不在执行将写事件加入到epoll中的动作了，
+     * 为什么需要这样做呢?因为写事件是边缘触发的，如果某个写事件已经就绪，但是用户程序并没有
+     * 进行处理，那么后续epoll将不会再次通知用户程序处理这个写事件就绪了，所以这里需要考虑这种情况
+     */
     if (wev->ready && wev->delayed) {
         return NGX_OK;
     }
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+    /*
+     * wev->delayed为1，表明在ngx_http_write_filter方法中检测到了需要限速，那个时候会将写事件加入到定时器中，
+     * 所以这里如果wev->delayed为1，则不会再将写事件加入到定时器中了
+     */
     if (!wev->delayed) {
         ngx_add_timer(wev, clcf->send_timeout);
     }
 
+    /* 将写事件加入到epoll中 */
     if (ngx_handle_write_event(wev, clcf->send_lowat) != NGX_OK) {
         ngx_http_close_request(r, 0);
         return NGX_ERROR;
