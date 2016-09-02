@@ -2955,7 +2955,8 @@ ngx_http_writer(ngx_http_request_t *r)
 
     /*
      * 如果发送响应过程中任一一个模块返回NGX_ERROR，则表明连接出错，则以NGX_ERROR调用
-     * ngx_http_finalize_request()结束请求 */
+     * ngx_http_finalize_request()结束请求 
+     */
     if (rc == NGX_ERROR) {
         ngx_http_finalize_request(r, rc);
         return;
