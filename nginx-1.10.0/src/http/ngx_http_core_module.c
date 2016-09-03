@@ -2605,7 +2605,27 @@ ngx_http_gzip_quantity(u_char *p, u_char *last)
 
 #endif
 
+/*
+ *     subrequest是Nginx中http框架提供的一种分解复杂请求的设计模式，它并不是http标准里面的概念。它可以把
+ * 原始请求分解为多个子请求，同时子请求还可以继续派生出子请求，使得诸多请求协同完成一个用户请求，并且每个
+ * 子请求只关注一个功能。那一般何时会触发子请求呢?一般来说子请求的创建都是在处理某个请求的content_handler
+ * 或者过滤模块中。另外，子请求创建之后并没有马上被执行，而是被挂载到了原始请求的posted_requests成员中，在
+ * http框架调用ngx_http_process_requests(首次从业务上处理请求)或ngx_http_request_handler(tcp连接上后续的事件
+ * 触发时)时，处理完当前请求的后，都会调用ngx_http_run_posted_requests来执行原始请求挂载的所有子请求
+ */
 
+/*
+ * 子请求的创建，子请求创建之后并没有马上被执行，而是挂载到了原始请求的posted_requests中，执行子请求是在
+ * ngx_http_run_posted_requests()方法中。ngx_http_subrequest函数参数解释如下:
+ * 1. r: 当前请求
+ * 2. uri和args: 新的要发起的uri和args
+ * 3. psr: 用于获取调用ngx_http_subrequest创建的子请求
+ * 4. ps: 存储的是子请求执行完毕后会调用的回调函数和传递给回调函数的自定义参数
+ * 5. flags: 在目前的Nginx中只有NGX_HTTP_SUBREQUEST_IN_MEMORY和NGX_HTTP_SUBREQUEST_WAITED，第一个值表示
+ * 的是处理子请求从upstream获取的数据的方式，第二个值表示的是如果某个子请求提前完成，但是还不能往客户端
+ * 发送数据，则是否需要将自身的请求状态设置为done。如果在flags中设置了该值，则子请求提前完成时状态会置为
+ * done，如果没有设置，则会等待该子请求前面的其他子请求处理完毕后才会将自身的状态设置为done。
+ */
 ngx_int_t
 ngx_http_subrequest(ngx_http_request_t *r,
     ngx_str_t *uri, ngx_str_t *args, ngx_http_request_t **psr,
@@ -2617,6 +2637,7 @@ ngx_http_subrequest(ngx_http_request_t *r,
     ngx_http_core_srv_conf_t      *cscf;
     ngx_http_postponed_request_t  *pr, *p;
 
+    /* r->subrequests表示的是一个请求可以创建的子请求个数 */
     if (r->subrequests == 0) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "subrequests cycle while processing \"%V\"", uri);
@@ -2633,6 +2654,7 @@ ngx_http_subrequest(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
+    /* 为子请求对象申请内存 */
     sr = ngx_pcalloc(r->pool, sizeof(ngx_http_request_t));
     if (sr == NULL) {
         return NGX_ERROR;
@@ -2640,9 +2662,11 @@ ngx_http_subrequest(ngx_http_request_t *r,
 
     sr->signature = NGX_HTTP_MODULE;
 
+    /* 设置子请求对应的连接对象 */
     c = r->connection;
     sr->connection = c;
 
+    /* 为所有的http模块设置请求上下文申请空间 */
     sr->ctx = ngx_pcalloc(r->pool, sizeof(void *) * ngx_http_max_module);
     if (sr->ctx == NULL) {
         return NGX_ERROR;
@@ -2655,6 +2679,11 @@ ngx_http_subrequest(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
+    /*
+     * 设置子请求的配置项上下文，为什么这个地方不直接设置成该子请求的父请求的配置项上下文呢?
+     * 因为子请求会从NGX_HTTP_SERVER_REWRITE_PHASE阶段重新走一遍后续的请求处理阶段，所以可能
+     * 会匹配新的location，而此时父请求的配置项上下文是匹配了具体location的，所以并不合适
+     */
     cscf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
     sr->main_conf = cscf->ctx->main_conf;
     sr->srv_conf = cscf->ctx->srv_conf;
@@ -2668,16 +2697,22 @@ ngx_http_subrequest(ngx_http_request_t *r,
     ngx_http_clear_accept_ranges(sr);
     ngx_http_clear_last_modified(sr);
 
+    /* 设置子请求接收请求体的对象 */
     sr->request_body = r->request_body;
 
 #if (NGX_HTTP_V2)
     sr->stream = r->stream;
 #endif
 
+    /* 子请求目前只支持GET方法 */
     sr->method = NGX_HTTP_GET;
     sr->http_version = r->http_version;
 
     sr->request_line = r->request_line;
+
+    /*
+     * 设置子请求的uri和args
+     */
     sr->uri = *uri;
 
     if (args) {
@@ -2687,6 +2722,10 @@ ngx_http_subrequest(ngx_http_request_t *r,
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
                    "http subrequest \"%V?%V\"", uri, &sr->args);
 
+    /*
+     * 解析flags中，并将flags的解析结果设置到请求对象中对应的成员中，其中subrequest_in_memory
+     * 标志位在upstream解析完头部，发包体给downstream时会用到
+     */
     sr->subrequest_in_memory = (flags & NGX_HTTP_SUBREQUEST_IN_MEMORY) != 0;
     sr->waited = (flags & NGX_HTTP_SUBREQUEST_WAITED) != 0;
 
@@ -2696,16 +2735,25 @@ ngx_http_subrequest(ngx_http_request_t *r,
 
     ngx_http_set_exten(sr);
 
-    sr->main = r->main;
-    sr->parent = r;
-    sr->post_subrequest = ps;
-    sr->read_event_handler = ngx_http_request_empty_handler;
-    sr->write_event_handler = ngx_http_handler;
+    sr->main = r->main;  // 设置原始请求
+    sr->parent = r;  // 设置父请求
+    sr->post_subrequest = ps;  // 设置该子请求处理完毕后的回调对象
+    sr->read_event_handler = ngx_http_request_empty_handler;  // 因为子请求不会不直接面向客户端，所以不处理读事件
+    sr->write_event_handler = ngx_http_handler;  // 将子请求写事件回调设置为ngx_http_handler，进行后续子请求处理
 
+    /*
+     * 连接对象中的c->data成员保存的是当前可以往out chain中发送数据的请求
+     * 如果创建子请求的请求目前是可以往out chain中发送数据的请求，那么现在由于其创建的第一个子请求，
+     * 此时子请求的往out chain中发送数据的优先级就比父请求要高了，所以将c->data设置为当前子请求。
+     * 如果该请求之前已经创建过其他子请求了，那么此次创建的子请求不能往out chain发送数据，因为一般
+     * 来说某个请求的所有子请求往out chain中发送数据的优先级是按照其创建顺序定的，即先创建的子请求
+     * 往out chain发送数据的优先级高于后创建的子请求
+     */
     if (c->data == r && r->postponed == NULL) {
         c->data = sr;
     }
 
+    /* 子请求直接继承了父请求的变量 */
     sr->variables = r->variables;
 
     sr->log_handler = r->log_handler;
@@ -2715,6 +2763,10 @@ ngx_http_subrequest(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
+    /*
+     * 表明父请求中产生的postponed节点是一个存放子请求的阶段，而不是存放父请求数据的节点，并将
+     * 该子请求阶段存放在父请求postponed链表的末尾
+     */
     pr->request = sr;
     pr->out = NULL;
     pr->next = NULL;
@@ -2727,23 +2779,28 @@ ngx_http_subrequest(ngx_http_request_t *r,
         r->postponed = pr;
     }
 
-    sr->internal = 1;
+    sr->internal = 1;  // 子请求的internal置位
 
     sr->discard_body = r->discard_body;
-    sr->expect_tested = 1;
+    sr->expect_tested = 1;  // 子请求不用进行expect机制处理
     sr->main_filter_need_in_memory = r->main_filter_need_in_memory;
 
     sr->uri_changes = NGX_HTTP_MAX_URI_CHANGES + 1;
     sr->subrequests = r->subrequests - 1;
 
+    /*
+     * 设置开始处理请求的时间
+     */
     tp = ngx_timeofday();
     sr->start_sec = tp->sec;
     sr->start_msec = tp->msec;
 
+    /* 原始请求的引用计数加1，表示原始请求新增了一个独立的操作 */
     r->main->count++;
 
     *psr = sr;
 
+    /* 将上面创建的子请求挂载都原始请求的posted_requests链表末尾 */
     return ngx_http_post_request(sr, NULL);
 }
 

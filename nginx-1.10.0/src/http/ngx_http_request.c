@@ -2425,6 +2425,15 @@ ngx_http_request_handler(ngx_event_t *ev)
     ngx_http_run_posted_requests(c);
 }
 
+/*
+ *     subrequest是Nginx中http框架提供的一种分解复杂请求的设计模式，它并不是http标准里面的概念。它可以把
+ * 原始请求分解为多个子请求，同时子请求还可以继续派生出子请求，使得诸多请求协同完成一个用户请求，并且每个
+ * 子请求只关注一个功能。那一般何时会触发子请求呢?一般来说子请求的创建都是在处理某个请求的content_handler
+ * 或者过滤模块中。另外，子请求创建之后并没有马上被执行，而是被挂载到了原始请求的posted_requests成员中，在
+ * http框架调用ngx_http_process_requests(首次从业务上处理请求)或ngx_http_request_handler(tcp连接上后续的事件
+ * 触发时)时，处理完当前请求的后，都会调用ngx_http_run_posted_requests来执行原始请求挂载的所有子请求
+ */
+
 /* 执行子请求 */
 void
 ngx_http_run_posted_requests(ngx_connection_t *c)
@@ -2462,7 +2471,7 @@ ngx_http_run_posted_requests(ngx_connection_t *c)
     }
 }
 
-
+/* 将子请求挂载在原始请求的posted_requests链表的末尾 */
 ngx_int_t
 ngx_http_post_request(ngx_http_request_t *r, ngx_http_posted_request_t *pr)
 {
@@ -2515,6 +2524,7 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
         return;
     }
 
+    /* 检查当前请求是不是子请求，如果是子请求，则检查其在创建的时候是否注册了回调函数，如果注册了，则执行回调 */
     if (r != r->main && r->post_subrequest) {
         rc = r->post_subrequest->handler(r, r->post_subrequest->data, rc);
     }
@@ -2562,8 +2572,17 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
         return;
     }
 
+    /*
+     * r != r->main表明当前请求是一个子请求
+     */
     if (r != r->main) {
 
+        /*
+         * r->buffered 和 r->postponed任意一个为1，表明当前子请求还有响应或者子请求没有处理完，
+         * 则设置写事件回调函数为ngx_http_writer用于后续请求的处理
+         * 一般来说如果某个子请求提前完成，并且产生了数据，则会从这个分支进去，因为此时
+         * r->postponed会存放着请求产生的数据
+         */
         if (r->buffered || r->postponed) {
 
             if (ngx_http_set_write_handler(r) != NGX_OK) {
@@ -2573,11 +2592,12 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
             return;
         }
 
-        pr = r->parent;
+        pr = r->parent;  // 获取父请求对象
 
+        /* r == c->data表明当前子请求是可以往out chain中发送数据的请求 */
         if (r == c->data) {
 
-            r->main->count--;
+            r->main->count--;  // 原始请求引用计数减1，表示一个独立动作的结束
 
             if (!r->logged) {
 
@@ -2595,16 +2615,23 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
                               &r->uri, &r->args);
             }
 
-            r->done = 1;
+            r->done = 1;  // 子请求处理完成后，将done标志位置位
 
+            /* 当前子请求因为可以发送数据所以并不是提前完成，所以将其从父请求的postponed链表中删除 */
             if (pr->postponed && pr->postponed->request == r) {
                 pr->postponed = pr->postponed->next;
             }
 
-            c->data = pr;
+            c->data = pr;  // 子请求结束后会将往out chain中发送数据的权利暂时移交给父请求
 
         } else {
 
+            /*
+             * 程序执行到这里表明当前子请求是提前完成的，并且此次并没有产生任何数据，则该子请求再次获得
+             * 执行机会的时候啥都不做(ngx_http_request_finalizer相当于啥都不做)，直到轮到其发送数据时，
+             * http框架会将其从父请求的postponed链表中删除。如果子请求提前完成并且产生了数据，会走上面的
+             * 分支
+             */
             ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
                            "http finalize non-active request: \"%V?%V\"",
                            &r->uri, &r->args);
@@ -2616,6 +2643,7 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
             }
         }
 
+        /* 将父请求加入到原始请求的posted_requests链表中获得一次运行机会 */
         if (ngx_http_post_request(pr, NULL) != NGX_OK) {
             r->main->count++;
             ngx_http_terminate_request(r, 0);
@@ -2630,6 +2658,7 @@ ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
     }
     
     /*
+     * 这里是处理主请求结束的逻辑
      * 当ngx_http_core_content_phase这个checker方法中调用r->content_handler返回NGX_AGAIN时，
      * 会以NGX_AGAIN为参数调用ngx_http_finalize_request()，此时就会走到这里，为什么呢?
      * r->content_handler中会调用发送响应头部或者响应包体的方法，如果当次没有发送完响应，则会返回

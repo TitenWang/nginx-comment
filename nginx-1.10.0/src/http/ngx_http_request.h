@@ -350,6 +350,9 @@ struct ngx_http_cleanup_s {
 typedef ngx_int_t (*ngx_http_post_subrequest_pt)(ngx_http_request_t *r,
     void *data, ngx_int_t rc);
 
+/*
+ * 该对象中存放的是某个子请求处理完之后会调用的回调函数及传递给回调函数的自定义参数
+ */
 typedef struct {
     ngx_http_post_subrequest_pt       handler;
     void                             *data;
@@ -358,17 +361,27 @@ typedef struct {
 
 typedef struct ngx_http_postponed_request_s  ngx_http_postponed_request_t;
 
+/*
+ * 该对象中存放的是某个请求派生出的子请求或者请求自己产生的数据，以链表形式存放
+ * 一般来说，request成员和out成员是互斥的，即如果一个ngx_http_postponed_request_t
+ * 类型的节点中request不为NULL，则表明该节点存放的是一个子请求，如果节点的out成员
+ * 不为NULL，而request成员为NUL，则表明该节点是一个数据节点，存放的是请求产生的数据
+ */
 struct ngx_http_postponed_request_s {
-    ngx_http_request_t               *request;
-    ngx_chain_t                      *out;
-    ngx_http_postponed_request_t     *next;
+    ngx_http_request_t               *request;  // 派生出的子请求
+    ngx_chain_t                      *out;  // 该请求自己产生的数据
+    ngx_http_postponed_request_t     *next;  // 链表节点
 };
 
 
 typedef struct ngx_http_posted_request_s  ngx_http_posted_request_t;
 
+/*
+ * 该对象中存放的是某个请求产生的子请求，子请求之间用链表方式连接，一般来说，只有原始请求
+ * 中的该类型成员才是有效的，由原始请求派生出来的请求对象中该成员是无效的。
+ */
 struct ngx_http_posted_request_s {
-    ngx_http_request_t               *request;
+    ngx_http_request_t               *request; // 原始请求派生出的子(孙)请求
     ngx_http_posted_request_t        *next;
 };
 
@@ -509,7 +522,7 @@ struct ngx_http_request_s {
      * 执行一个新的独立操作时，都需要对原始请求的引用计数加1，防止请求处理出错。
      */
     unsigned                          count:16;
-    unsigned                          subrequests:8;
+    unsigned                          subrequests:8;  // 能创建的子请求个数
 
     /* 阻塞标志位，仅有aio使用 */
     unsigned                          blocked:8;
@@ -583,18 +596,18 @@ struct ngx_http_request_s {
     unsigned                          header_only:1;
     unsigned                          keepalive:1;  // 为1表示当前请求是keeplive请求
     unsigned                          lingering_close:1;  // 延迟关闭请求标志位
-    unsigned                          discard_body:1;
-    unsigned                          reading_body:1;
-    unsigned                          internal:1;
+    unsigned                          discard_body:1;  // 正在丢弃包体的标志位
+    unsigned                          reading_body:1;  // 正在读取包体的标志位
+    unsigned                          internal:1;  // 子请求标志位
     unsigned                          error_page:1;
     unsigned                          filter_finalize:1;
     unsigned                          post_action:1;
     unsigned                          request_complete:1;
     unsigned                          request_output:1;
     unsigned                          header_sent:1;  // 表示响应头是否已经发送的标志位
-    unsigned                          expect_tested:1;
+    unsigned                          expect_tested:1;  // expect机制测试标志位
     unsigned                          root_tested:1;
-    unsigned                          done:1;
+    unsigned                          done:1;  // 请求完成的标志位
     unsigned                          logged:1;
 
     unsigned                          buffered:4;  // 表示缓冲区中是否有带发送内容的标志位
