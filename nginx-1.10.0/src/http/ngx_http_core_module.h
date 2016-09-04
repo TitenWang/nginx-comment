@@ -248,6 +248,11 @@ typedef struct {
     ngx_uint_t                 location_rewrite_index;
 } ngx_http_phase_engine_t;
 
+/*
+ * 在http框架的初始化过程中，任何一个http模块都可以在ngx_http_module_t接口的postconfiguration
+ * 方法中将自定义的方法添加到handlers数组中
+ */
+
 /* 一个http阶段中的所有处理方法 */
 typedef struct {
     ngx_array_t                handlers;
