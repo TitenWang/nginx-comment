@@ -2941,8 +2941,10 @@ ngx_http_cleanup_add(ngx_http_request_t *r, size_t size)
 {
     ngx_http_cleanup_t  *cln;
 
+    /* 获取请求对应的原始请求 */
     r = r->main;
 
+    /* 申请清理资源使用的ngx_http_cleanup_t对象内存 */
     cln = ngx_palloc(r->pool, sizeof(ngx_http_cleanup_t));
     if (cln == NULL) {
         return NULL;
@@ -2959,7 +2961,7 @@ ngx_http_cleanup_add(ngx_http_request_t *r, size_t size)
     }
 
     cln->handler = NULL;
-    cln->next = r->cleanup;
+    cln->next = r->cleanup; // 将cln挂载在原始请求的cleanup链表的首部
 
     r->cleanup = cln;
 

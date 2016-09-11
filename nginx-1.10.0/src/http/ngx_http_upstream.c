@@ -443,7 +443,10 @@ ngx_conf_bitmask_t  ngx_http_upstream_ignore_headers_masks[] = {
     { ngx_null_string, 0 }
 };
 
-
+/*
+ * 创建upstream对象，默认情况下请求的upstream成员只是NULL，在设置upstream之前需要调用
+ * ngx_http_upstream_create方法从内存池中创建ngx_http_upstream_t结构体
+ */
 ngx_int_t
 ngx_http_upstream_create(ngx_http_request_t *r)
 {
@@ -456,13 +459,16 @@ ngx_http_upstream_create(ngx_http_request_t *r)
         ngx_http_upstream_cleanup(r);
     }
 
+    /* 申请ngx_http_upstream_t对象内存 */
     u = ngx_pcalloc(r->pool, sizeof(ngx_http_upstream_t));
     if (u == NULL) {
         return NGX_ERROR;
     }
 
+    /* 将ngx_http_upstream_t对象设置到请求的upstream成员中 */
     r->upstream = u;
 
+    /* 以下会初始化ngx_http_upstream_t对象的部分成员 */
     u->peer.log = r->connection->log;
     u->peer.log_error = NGX_ERROR_ERR;
 
@@ -476,7 +482,12 @@ ngx_http_upstream_create(ngx_http_request_t *r)
     return NGX_OK;
 }
 
-
+/*
+ * 启动upstream。
+ * 在把请求对象ngx_http_request_t结构体中的upstream成员创建并设置好，并且正确设置
+ * upstream->conf配置结构体后，就可以启动upstream机制了。下面函数中的参数r为客户端
+ * 和Nginx之间的请求对象
+ */
 void
 ngx_http_upstream_init(ngx_http_request_t *r)
 {
@@ -493,7 +504,11 @@ ngx_http_upstream_init(ngx_http_request_t *r)
         return;
     }
 #endif
-
+    /*
+     * 首先检查请求对应的客户端连接，如果这个连接上的读事件的在定时器中，那么需要将其从定时器中移除。
+     * 为什么呢?因为一旦启动upstream机制，就不应该对客户端的读操作带有超时时间的处理，请求的主要触发
+     * 事件应该以将以与上游服务器的连接为主。
+     */
     if (c->read->timer_set) {
         ngx_del_timer(c->read);
     }
@@ -510,10 +525,11 @@ ngx_http_upstream_init(ngx_http_request_t *r)
         }
     }
 
+    /* 构造发往上游服务器的请求 */
     ngx_http_upstream_init_request(r);
 }
 
-
+/* 构造发往上游服务器的请求 */
 static void
 ngx_http_upstream_init_request(ngx_http_request_t *r)
 {
@@ -530,7 +546,7 @@ ngx_http_upstream_init_request(ngx_http_request_t *r)
         return;
     }
 
-    u = r->upstream;
+    u = r->upstream;  // 获取请求对象中的upstream对象
 
 #if (NGX_HTTP_CACHE)
 
@@ -572,8 +588,13 @@ ngx_http_upstream_init_request(ngx_http_request_t *r)
 
 #endif
 
+    /* 设置是否指定文件缓存路径标志 */
     u->store = u->conf->store;
 
+    /*
+     * 如果u->store、r->post_action和u->conf->ignore_client_abort同时为0，则需要设置
+     * 检查Nginx与下游客户端之间tcp连接的方法
+     */
     if (!u->store && !r->post_action && !u->conf->ignore_client_abort) {
         r->read_event_handler = ngx_http_upstream_rd_check_broken_connection;
         r->write_event_handler = ngx_http_upstream_wr_check_broken_connection;
@@ -583,11 +604,16 @@ ngx_http_upstream_init_request(ngx_http_request_t *r)
         u->request_bufs = r->request_body->bufs;
     }
 
+    /*
+     * 调用由使用upstream机制的http模块实现的create_request方法构造发往上游服务器的请求，请求的内容
+     * 会设置到request_bufs缓冲区链表中
+     */
     if (u->create_request(r) != NGX_OK) {
         ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
         return;
     }
 
+    /* 获取发起此次连接的Nginx的本机地址信息 */
     u->peer.local = ngx_http_upstream_get_local(r, u->conf->local);
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
@@ -625,16 +651,19 @@ ngx_http_upstream_init_request(ngx_http_request_t *r)
         ngx_memzero(u->state, sizeof(ngx_http_upstream_state_t));
     }
 
+    /* 向请求对应的原始请求的cleanup链表首部添加一个新成员 */
     cln = ngx_http_cleanup_add(r, 0);
     if (cln == NULL) {
         ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
         return;
     }
 
+    /* 将handler回调方法设置为ngx_http_upstream_cleanup */
     cln->handler = ngx_http_upstream_cleanup;
-    cln->data = r;
+    cln->data = r;  // data成员即为handler回调的参数
     u->cleanup = &cln->handler;
 
+    /* 解析主机域名 */
     if (u->resolved == NULL) {
 
         uscf = u->conf->upstream;
@@ -645,6 +674,7 @@ ngx_http_upstream_init_request(ngx_http_request_t *r)
         u->ssl_name = u->resolved->host;
 #endif
 
+        /* 获取host主机名 */
         host = &u->resolved->host;
 
         if (u->resolved->sockaddr) {
@@ -672,10 +702,15 @@ ngx_http_upstream_init_request(ngx_http_request_t *r)
             return;
         }
 
+        /* 获取ngx_http_upstream_module模块的配置项结构体 */
         umcf = ngx_http_get_module_main_conf(r, ngx_http_upstream_module);
 
+        /* 获取配置的所有远端服务器 */
         uscfp = umcf->upstreams.elts;
 
+        /*
+         * 下面会遍历配置文件中配置的所有远端服务器信息，找到此次需要建链的远端服务器信息
+         */
         for (i = 0; i < umcf->upstreams.nelts; i++) {
 
             uscf = uscfp[i];
@@ -751,14 +786,17 @@ found:
         return;
     }
 
+    /* 设置Nginx与上游服务器开始建链的时间 */
     u->peer.start_time = ngx_current_msec;
 
+    /* 设置连接失败后的重试次数 */
     if (u->conf->next_upstream_tries
         && u->peer.tries > u->conf->next_upstream_tries)
     {
         u->peer.tries = u->conf->next_upstream_tries;
     }
 
+    /* 与上游服务器建立连接 */
     ngx_http_upstream_connect(r, u);
 }
 
@@ -1091,7 +1129,7 @@ failed:
     ngx_http_run_posted_requests(c);
 }
 
-
+/* Nginx与上游服务器之间的连接上的读写事件回调函数 */
 static void
 ngx_http_upstream_handler(ngx_event_t *ev)
 {
@@ -1099,24 +1137,38 @@ ngx_http_upstream_handler(ngx_event_t *ev)
     ngx_http_request_t   *r;
     ngx_http_upstream_t  *u;
 
+    /* 从事件的data成员获取连接，此时的连接对象是Nginx与上游服务器之间的连接对象 */
     c = ev->data;
-    r = c->data;
+    r = c->data;  // 从连接对象中获取请求对象
 
-    u = r->upstream;
-    c = r->connection;
+    u = r->upstream;  // 获取请求对应的upstream对象
+    c = r->connection;  // 从请求对象中获取的是客户端与Nginx之间的连接对象
 
     ngx_http_set_log_request(c->log, r);
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
                    "http upstream request: \"%V?%V\"", &r->uri, &r->args);
 
+    /*
+     * 优先处理写事件
+     */
     if (ev->write) {
+        /*
+         * 当Nginx与上游服务器连接的写事件被触发时，upstream的write_event_handler方法被调用
+         */
         u->write_event_handler(r, u);
 
     } else {
+        /*
+         * 当Nginx与上游服务器连接的读事件被触发时，upstream的read_event_handler方法被调用
+         */
         u->read_event_handler(r, u);
     }
 
+    /*
+     * 注意，此时的c表示的是客户端与Nginx之间的连接，所以这里调用ngx_http_run_posted_requests方法
+     * 执行的是客户端与Nginx之间的请求派生出的子请求
+     */
     ngx_http_run_posted_requests(c);
 }
 
@@ -1324,7 +1376,7 @@ ngx_http_upstream_check_broken_connection(ngx_http_request_t *r,
     }
 }
 
-
+/* 与上游服务器建立tcp连接 */
 static void
 ngx_http_upstream_connect(ngx_http_request_t *r, ngx_http_upstream_t *u)
 {
@@ -1350,6 +1402,7 @@ ngx_http_upstream_connect(ngx_http_request_t *r, ngx_http_upstream_t *u)
     u->state->connect_time = (ngx_msec_t) -1;
     u->state->header_time = (ngx_msec_t) -1;
 
+    /* 调用socket、connect与远端服务器建立连接 */
     rc = ngx_event_connect_peer(&u->peer);
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
@@ -1361,6 +1414,7 @@ ngx_http_upstream_connect(ngx_http_request_t *r, ngx_http_upstream_t *u)
         return;
     }
 
+    /* 设置远端服务器名称 */
     u->state->peer = u->peer.name;
 
     if (rc == NGX_BUSY) {
@@ -1376,13 +1430,18 @@ ngx_http_upstream_connect(ngx_http_request_t *r, ngx_http_upstream_t *u)
 
     /* rc == NGX_OK || rc == NGX_AGAIN || rc == NGX_DONE */
 
+    /* 获取Nginx与远端服务器建立的连接对象，并将请求对象设置到连接的data成员中 */
     c = u->peer.connection;
 
     c->data = r;
 
+    /* 设置Nginx与远端服务器连接的读写事件处理函数 */
     c->write->handler = ngx_http_upstream_handler;
     c->read->handler = ngx_http_upstream_handler;
 
+    /*
+     * 设置upstream对象的读写事件回调函数，在ngx_http_upstream_handler中会优先处理写事件
+     */
     u->write_event_handler = ngx_http_upstream_send_request_handler;
     u->read_event_handler = ngx_http_upstream_process_header;
 
@@ -1450,6 +1509,11 @@ ngx_http_upstream_connect(ngx_http_request_t *r, ngx_http_upstream_t *u)
     u->request_sent = 0;
     u->request_body_sent = 0;
 
+    /*
+     * rc == NGX_AGAIN表明调用connect函数返回的NGX_AGAIN，表明Nginx暂时还没有和远端服务器建立连接，
+     * 在ngx_event_connect_peer方法中已经将写事件加入到epoll中，这里也需要将其加入到定时器中，因为
+     * Nginx与远端服务器建立连接是有时长限制的，超时时间就是u->conf->connect_timeout。
+     */
     if (rc == NGX_AGAIN) {
         ngx_add_timer(c->write, u->conf->connect_timeout);
         return;
@@ -1464,6 +1528,7 @@ ngx_http_upstream_connect(ngx_http_request_t *r, ngx_http_upstream_t *u)
 
 #endif
 
+    /* 程序执行到这里表明Nginx已经与上游服务器成功建立了连接，所以下一步就是发送请求到上游服务器 */
     ngx_http_upstream_send_request(r, u, 1);
 }
 
@@ -1778,7 +1843,7 @@ ngx_http_upstream_reinit(ngx_http_request_t *r, ngx_http_upstream_t *u)
     return NGX_OK;
 }
 
-
+/* 发送请求到上游服务器 */
 static void
 ngx_http_upstream_send_request(ngx_http_request_t *r, ngx_http_upstream_t *u,
     ngx_uint_t do_write)
@@ -1791,10 +1856,15 @@ ngx_http_upstream_send_request(ngx_http_request_t *r, ngx_http_upstream_t *u,
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0,
                    "http upstream send request");
 
+    /* 设置Nginx与上游服务器之间成功建链的时间connect_time */
     if (u->state->connect_time == (ngx_msec_t) -1) {
         u->state->connect_time = ngx_current_msec - u->state->response_time;
     }
 
+    /*
+     * u->request_sent如果为0，则表示Nginx还没有往上游服务器发送过请求，并测试Nginx与上游服务器
+     * 之间的连接是否正常
+     */
     if (!u->request_sent && ngx_http_upstream_test_connect(c) != NGX_OK) {
         ngx_http_upstream_next(r, u, NGX_HTTP_UPSTREAM_FT_ERROR);
         return;
@@ -1802,6 +1872,7 @@ ngx_http_upstream_send_request(ngx_http_request_t *r, ngx_http_upstream_t *u,
 
     c->log->action = "sending request to upstream";
 
+    /* 向远端服务器发送请求 */
     rc = ngx_http_upstream_send_request_body(r, u, do_write);
 
     if (rc == NGX_ERROR) {
@@ -1814,6 +1885,7 @@ ngx_http_upstream_send_request(ngx_http_request_t *r, ngx_http_upstream_t *u,
         return;
     }
 
+    /* rc == NGX_AGAIN表明没有向远端服务器发送完请求内容，所以需要将写事件重新加入到epoll和定时器中 */
     if (rc == NGX_AGAIN) {
         if (!c->write->ready) {
             ngx_add_timer(c->write, u->conf->send_timeout);
@@ -1833,8 +1905,16 @@ ngx_http_upstream_send_request(ngx_http_request_t *r, ngx_http_upstream_t *u,
 
     /* rc == NGX_OK */
 
+    /*
+     * 程序执行到这里表明Nginx已经向上游服务器发送完了请求内容，包括请求头和包体(如果需要的话)，
+     * 所以将标志位request_body_sent置位
+     */
     u->request_body_sent = 1;
 
+    /*
+     * 因为已经发送完了给上游服务器的请求，所以也就不要在监控连接对应的写事件是否会超时了，因此
+     * 将写事件从定时器中移除
+     */
     if (c->write->timer_set) {
         ngx_del_timer(c->write);
     }
@@ -1851,6 +1931,7 @@ ngx_http_upstream_send_request(ngx_http_request_t *r, ngx_http_upstream_t *u,
         c->tcp_nopush = NGX_TCP_NOPUSH_UNSET;
     }
 
+    /* 将upstream写事件回调设置为ngx_http_upstream_dummy_handler，啥事都不做 */
     u->write_event_handler = ngx_http_upstream_dummy_handler;
 
     if (ngx_handle_write_event(c->write, 0) != NGX_OK) {
@@ -1859,6 +1940,12 @@ ngx_http_upstream_send_request(ngx_http_request_t *r, ngx_http_upstream_t *u,
         return;
     }
 
+    /*
+     * 因为已经给上游服务器发送完了请求，所以接下来就是要进入处理上游服务器给Nginx会的响应的流程了，
+     * 所以需要将Nginx与上游服务器连接的读事件加入到定时器和epoll中，进行下一步流程的处理。
+     * 那为什么这个地方没有设置读事件对应的回调处理函数呢?那是因为在这之前已经设置过了，详见
+     * ngx_http_upstream_connect()中。
+     */
     ngx_add_timer(c->read, u->conf->read_timeout);
 
     if (c->read->ready) {
@@ -1984,7 +2071,7 @@ ngx_http_upstream_send_request_body(ngx_http_request_t *r,
     return rc;
 }
 
-
+/* upstream机制在Nginx未将请求完全发送给上游服务器时设置的写事件回调函数 */
 static void
 ngx_http_upstream_send_request_handler(ngx_http_request_t *r,
     ngx_http_upstream_t *u)
@@ -1996,6 +2083,10 @@ ngx_http_upstream_send_request_handler(ngx_http_request_t *r,
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "http upstream send request handler");
 
+    /*
+     * 如果timedout为1，表明连接对应的写事件已经超时了，所以需要以NGX_HTTP_UPSTREAM_FT_TIMEOUT调用
+     * ngx_http_upstream_next方法，进行下一步处理
+     */
     if (c->write->timedout) {
         ngx_http_upstream_next(r, u, NGX_HTTP_UPSTREAM_FT_TIMEOUT);
         return;
@@ -2010,7 +2101,9 @@ ngx_http_upstream_send_request_handler(ngx_http_request_t *r,
 
 #endif
 
+    /* header_sent表明已经向上游服务器发送过请求头部了，所以不能再调用ngx_http_upstream_send_request */
     if (u->header_sent) {
+        /* 将连接对应的写事件回调设置为ngx_http_upstream_dummy_handler，啥事都不做，因为请求已经发送过了 */
         u->write_event_handler = ngx_http_upstream_dummy_handler;
 
         (void) ngx_handle_write_event(c->write, 0);
@@ -2018,6 +2111,7 @@ ngx_http_upstream_send_request_handler(ngx_http_request_t *r,
         return;
     }
 
+    /* epoll中调度到了Nginx与上游服务器的写事件，可以继续向上游服务器发送请求了 */
     ngx_http_upstream_send_request(r, u, 1);
 }
 
