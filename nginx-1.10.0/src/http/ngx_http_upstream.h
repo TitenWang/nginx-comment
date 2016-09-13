@@ -417,7 +417,7 @@ struct ngx_http_upstream_s {
      * 存储全部的包体，此时buffer必须足够大，其大小有ngx_http_upstream_conf_t中的buffer_size决定
      */
     ngx_buf_t                        buffer;
-    off_t                            length;  // 来自上游服务器的响应包体长度
+    off_t                            length;  // 剩余未接收到的上游服务器的响应包体长度
 
     /*
      * out_bufs在两种场景下有不同的意义: 1. 当不需要转发包体，且使用默认的input_filter方法处理包体时，out_bufs
@@ -525,7 +525,7 @@ struct ngx_http_upstream_s {
     /* request_body_sent表示是否已经向上游服务器发送完了请求包体 */
     unsigned                         request_body_sent:1;
     /*
-     * 将上游服务器的响应划分为包头和包体，如果把响应转发非客户端，header_sent标志位表示包头是否已经发送，
+     * 将上游服务器的响应划分为包头和包体，如果把响应转发给客户端，header_sent标志位表示包头是否已经发送，
      * header_sent为1表示包头已经发送给客户端了。如果不转发响应到客户端，则header_sent就没有意义
      */
     unsigned                         header_sent:1;
