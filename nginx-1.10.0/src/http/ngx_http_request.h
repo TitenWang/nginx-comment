@@ -593,7 +593,7 @@ struct ngx_http_request_s {
 
     unsigned                          pipeline:1;
     unsigned                          chunked:1;
-    unsigned                          header_only:1;
+    unsigned                          header_only:1;  // 为1表示只要向客户端发送响应头即可
     unsigned                          keepalive:1;  // 为1表示当前请求是keeplive请求
     unsigned                          lingering_close:1;  // 延迟关闭请求标志位
     unsigned                          discard_body:1;  // 正在丢弃包体的标志位

@@ -2381,6 +2381,11 @@ ngx_http_upstream_process_header(ngx_http_request_t *r, ngx_http_upstream_t *u)
 
     /* n != 0表明接收到了部分响应包体 */
     if (n) {
+        /*
+         * 上面说到过，在调用http模块实现的process_header方法后，buffer缓冲区的pos指针会指向包体开始处，
+         * 那么在这里将last指针指向为pos指针指向的内存处，说明此时last指针指向的就是本次接收到的包体的
+         * 起始地址
+         */
         u->buffer.last = u->buffer.pos;
 
         u->state->response_length += n;  // 叠加已接收的响应长度
@@ -2776,7 +2781,10 @@ ngx_http_upstream_process_headers(ngx_http_request_t *r, ngx_http_upstream_t *u)
     return NGX_OK;
 }
 
-
+/*
+ * ngx_http_upstream_process_body_in_memory函数就是在upstream机制不转发响应的时候用来在内存中
+ * 处理响应包体的默认方法
+ */
 static void
 ngx_http_upstream_process_body_in_memory(ngx_http_request_t *r,
     ngx_http_upstream_t *u)
@@ -2793,16 +2801,30 @@ ngx_http_upstream_process_body_in_memory(ngx_http_request_t *r,
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0,
                    "http upstream process body on memory");
 
+    /*
+     * 首先检查Nginx与上游服务器之间连接对应的读事件是否超时，即判断读事件的timedout标志位是否为1，
+     * 如果为1，表明读事件已经超时了，于是会用NGX_HTTP_GATEWAY_TIME_OUT调用ngx_http_upstream_finalize_request
+     * 结束此次请求
+     */
     if (rev->timedout) {
         ngx_connection_error(c, NGX_ETIMEDOUT, "upstream timed out");
         ngx_http_upstream_finalize_request(r, u, NGX_HTTP_GATEWAY_TIME_OUT);
         return;
     }
 
+    /*
+     * 获取ngx_http_upstream_t中的buffer缓冲区对象，在upstream机制不转发响应且使用默认input_filter方法时，
+     * buffer缓冲区会用来存放所有的响应包体
+     */
     b = &u->buffer;
 
     for ( ;; ) {
 
+        /*
+         * 首先检查buffer缓冲区中是否还有剩余的空间用来接收上游服务器发来的响应，即看last成员和end成员之间
+         * 是否还有未使用内存，如果有，则使用这块内存接收响应包体，如果buffer缓冲区满了，那么表示响应过大，
+         * 这个时候会调用ngx_http_upstream_finalize_request结束请求
+         */
         size = b->end - b->last;
 
         if (size == 0) {
@@ -2812,39 +2834,60 @@ ngx_http_upstream_process_body_in_memory(ngx_http_request_t *r,
             return;
         }
 
+        /*
+         * 调用recv函数从Nginx与上游服务器连接对应的读缓冲区中读取响应内容，从传递给recv函数的参数可以看到
+         * 此次接收响应包体是从buffer缓冲区的last成员指向的内存处开始接收，这也印证了在接收包体过程中，last
+         * 成员始终指向的是用于接收包体的内存起始地址
+         */
         n = c->recv(c, b->last, size);
 
+        /* 如果recv返回NGX_AGAIN表明需要此次没有从缓冲区中读取到包体，需要让事件模块再次调度以获取包体数据 */
         if (n == NGX_AGAIN) {
             break;
         }
 
+        /* 如果recv返回0表明上游服务器主动关闭了连接，返回NGX_ERROR表明连接出错，这种情况下都需要结束请求 */
         if (n == 0 || n == NGX_ERROR) {
             ngx_http_upstream_finalize_request(r, u, n);
             return;
         }
 
+        /* 程序执行到这里表明从Nginx与上游服务器连接对应的读缓冲区中读取到了响应包体数据 */
+
+        /* 更新接收到的响应数据长度 */
         u->state->response_length += n;
 
+        /*
+         * 调用inpur_filter方法处理接收到的包体长度，默认的inpur_filter方法会将本次接收到的包体内容用缓冲区
+         * 对象ngx_buf_t管理起来，并挂在到ngx_http_upstream_t结构的out_bufs缓冲区链表中
+         */
         if (u->input_filter(u->input_filter_ctx, n) == NGX_ERROR) {
             ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
             return;
         }
 
+        /*
+         * 如果读事件已经不处于就绪状态了，即缓冲区中没有数据可读了，则不再调用recv，而是退出循环，期望事件
+         * 模块再次调度。
+         */
         if (!rev->ready) {
             break;
         }
     }
 
+    /* u->length == 0表明已经接收到了所有的响应包体，所以接下来就可以结束请求了 */
     if (u->length == 0) {
         ngx_http_upstream_finalize_request(r, u, 0);
         return;
     }
 
+    /* 将读事件加入到epoll中，等待再次调度 */
     if (ngx_handle_read_event(rev, 0) != NGX_OK) {
         ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
         return;
     }
 
+    /* 将读事件加入到定时器中，超时时间为ngx_http_upstream_conf_t结构体中的read_timeou */
     if (rev->active) {
         ngx_add_timer(rev, u->conf->read_timeout);
 
@@ -2853,7 +2896,7 @@ ngx_http_upstream_process_body_in_memory(ngx_http_request_t *r,
     }
 }
 
-
+/* 当需要upstream转发响应的时候，就会调用ngx_http_upstream_send_response向客户端发送响应 */
 static void
 ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
 {
@@ -2864,6 +2907,11 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
     ngx_connection_t          *c;
     ngx_http_core_loc_conf_t  *clcf;
 
+    /*
+     * 调用ngx_http_send_header向客户端发送响应头，在函数ngx_http_upstream_process_headers中我们
+     * 可以看到upstream机制会将从上游服务器中解析到的响应头设置到请求对象ngx_http_upstream_t结构体
+     * 的headers_out.headers成员中。这些响应头就是在这个地方发送给客户端的。
+     */
     rc = ngx_http_send_header(r);
 
     if (rc == NGX_ERROR || rc > NGX_OK || r->post_action) {
@@ -2871,6 +2919,7 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
         return;
     }
 
+    /* 已经发送了响应头(有可能只发了部分)，那么这个时候会将header_sent标志位置位 */
     u->header_sent = 1;
 
     if (u->upgrade) {
@@ -2880,6 +2929,7 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
 
     c = r->connection;
 
+    /* r->header_only为1的话表明只需要向客户端发送响应头即可，那么这个时候就可以结束请求了 */
     if (r->header_only) {
 
         if (!u->buffering) {
@@ -2895,6 +2945,11 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
         u->pipe->downstream_error = 1;
     }
 
+    /*
+     * 如果Nginx接收了来自客户端请求的包体并且调用ngx_http_read_client_request_body方法将客户端
+     * 请求包体存放在了临时文件中，那么这个时候就需要进行清理，为什么要在这个时候清理呢?因为开始
+     * 向客户端转发上游服务器的响应意味着不会在需要客户端请求的包体数据了，所以在这里进行清理。
+     */
     if (r->request_body && r->request_body->temp_file) {
         ngx_pool_run_cleanup_file(r->pool, r->request_body->temp_file->file.fd);
         r->request_body->temp_file->file.fd = NGX_INVALID_FILE;
@@ -2902,6 +2957,12 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
+    /*
+     * 在这里会判断ngx_http_upstream_t结构体的buffering成员，如果buffering标志位为1，表明需要打开更大的
+     * 缓冲区，甚至是临时文件来尽可能多地接收上游服务器的响应数据;如果buffering为0，则只需要开启固定大小
+     * 的内存用来缓存上游服务器的响应数据，如果在接收上游服务器响应时缓冲区满了，那么将会暂停接收，等待
+     * 缓冲区的数据发送给客户端后缓冲区自然就会清空，于是就可以继续用这块内存缓存响应数据了。
+     */
     if (!u->buffering) {
 
         if (u->input_filter == NULL) {
@@ -3646,10 +3707,24 @@ ngx_http_upstream_non_buffered_filter_init(void *data)
     return NGX_OK;
 }
 
-
+/*
+ * ngx_http_upstream_non_buffered_filter是默认的input_filter方法，用来处理包体。首先需要弄清楚是从哪里
+ * 获取到本次接收到的上游响应包体。答案是从ngx_http_upstream_t结构体中的buffer成员中获取。buffer缓冲区
+ * 中的last成员指向本次接收到的包体的起始地址，而input_filter方法中的bytes参数则是本次接收到的包体长度，
+ * 那么通过last成员和bytes参数就可以完整地获取包体内容了。
+ * 这个默认的input_filter方法将会试图在ngx_http_upstream_t结构体的buffer成员中存放全部的响应包体，并且
+ * 会获取一个缓冲区结构体指向本次接收到的包体，并将这个缓冲区结构体挂载到ngx_http_upstream_t结构体的
+ * out_bufs缓冲区链表中。
+ */
 static ngx_int_t
 ngx_http_upstream_non_buffered_filter(void *data, ssize_t bytes)
 {
+    /*
+     * 在ngx_http_upstream_process_header函数中可以看到，如果http模块没有实现input_filter方法，那么将
+     * 会使用默认的方法，也就是这个函数，另外，也会将ngx_http_upstream_t结构体中的input_filter_ctx成员
+     * 设置为ngx_http_request_t对象，也就是input_filter函数的data参数。所以在这里将data成员强转为请求
+     * 对象ngx_http_request_t。
+     */
     ngx_http_request_t  *r = data;
 
     ngx_buf_t            *b;
@@ -3658,32 +3733,48 @@ ngx_http_upstream_non_buffered_filter(void *data, ssize_t bytes)
 
     u = r->upstream;
 
+    /* 遍历ngx_http_upstream_t结构中的out_bufs缓冲区链表，定位到链表末尾 */
     for (cl = u->out_bufs, ll = &u->out_bufs; cl; cl = cl->next) {
         ll = &cl->next;
     }
 
+    /*
+     * 从ngx_http_upstream_t结构体的free_bufs链表中获取一个缓冲区对象，注意并没有分配实际存储内存，因为
+     * 会用这个缓冲区对象指向ngx_http_upstream_t中的buffer缓冲区对象中的实际内存。
+     */
     cl = ngx_chain_get_free_buf(r->pool, &u->free_bufs);
     if (cl == NULL) {
         return NGX_ERROR;
     }
 
+    /* 将新获取的缓冲区对象挂载到out_bufs链表末尾 */
     *ll = cl;
 
+    /*
+     * 修改新分配的缓冲区标志位，memory置位表明在内存中，flush置位表明可能发送缓冲区内容到客户端
+     */
     cl->buf->flush = 1;
     cl->buf->memory = 1;
 
     b = &u->buffer;
 
+    /* ngx_http_upstream_t的buffer缓冲区的last成员指向的是本次接收到的响应包体的其实位置 */
     cl->buf->pos = b->last;
+    /* 将缓冲区的last指针后移bytes字节，那么移位后的last成员指向的就是下次接收响应包体的起始地址 */
     b->last += bytes;
+    /*
+     * cl->buf->last = b->last;和cl->buf->pos = b->last;表明新获取的缓冲区对象其指向的就是buffer缓冲区
+     * 中此次获取的响应包体内容。换句话说，就是last和pos成员确定了out_bufs链表中每个缓冲区的包体数据
+     */
     cl->buf->last = b->last;
     cl->buf->tag = u->output.tag;
 
+    /* u->length == -1表明在解析响应包头的时候没有解析到指示包体长度的字段，那么也就没有必要继续处理包体了 */
     if (u->length == -1) {
         return NGX_OK;
     }
 
-    u->length -= bytes;
+    u->length -= bytes;  // 更新剩余未接收的响应包体长度
 
     return NGX_OK;
 }
