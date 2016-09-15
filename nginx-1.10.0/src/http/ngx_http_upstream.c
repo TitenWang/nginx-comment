@@ -4358,7 +4358,16 @@ ngx_http_upstream_dummy_handler(ngx_http_request_t *r, ngx_http_upstream_t *u)
                    "http upstream dummy handler");
 }
 
-
+/*
+ * 当处理Nginx与上游服务器之间请求的过程中出现错误时，往往会调用ngx_http_upstream_next方法。
+ * 为什么需要这个方法呢?因为upstream机制通过该方法提供了一个更加灵活的功能:当Nginx与上游服务器
+ * 交互出错时，Nginx并不想立刻认为这个请求处理失败，而是试图多给上游服务器一些机会，可以重新
+ * 向这台或者另一台上游服务器发起连接、发送请求、接收响应，以避免网络故障。上述功能的实现正是
+ * 通过这个方法实现的，因为该方法在结束请求之前，会检查ngx_peer_connection_t结构体中的tries成员
+ * 每次Nginx与上游服务器交互出错时就会把tries减1.只有tries为0的时候，才会真正调用结束upstream
+ * 请求的方法ngx_http_upstream_finalize_request()，否则继续调用ngx_http_upstream_connect方法
+ * 重新向上游服务器发起请求。
+ */
 static void
 ngx_http_upstream_next(ngx_http_request_t *r, ngx_http_upstream_t *u,
     ngx_uint_t ft_type)
@@ -4394,6 +4403,7 @@ ngx_http_upstream_next(ngx_http_request_t *r, ngx_http_upstream_t *u,
         u->peer.tries++;
     }
 
+    /* 利用ft_type获取请求处理过程中的错误状态 */
     switch (ft_type) {
 
     case NGX_HTTP_UPSTREAM_FT_TIMEOUT:
@@ -4421,6 +4431,7 @@ ngx_http_upstream_next(ngx_http_request_t *r, ngx_http_upstream_t *u,
         status = NGX_HTTP_BAD_GATEWAY;
     }
 
+    /* 如果Nginx与客户端之间的连接出错，也需要结束upstream请求 */
     if (r->connection->error) {
         ngx_http_upstream_finalize_request(r, u,
                                            NGX_HTTP_CLIENT_CLOSED_REQUEST);
@@ -4437,6 +4448,14 @@ ngx_http_upstream_next(ngx_http_request_t *r, ngx_http_upstream_t *u,
         ft_type |= NGX_HTTP_UPSTREAM_FT_NON_IDEMPOTENT;
     }
 
+    /*
+     * 只有向这台上有服务器的重试次数tries减为0时，才会真正调用ngx_http_upstream_finalize_request方法
+     * 结束请求，否则会试图再次与上游服务器交互。
+     * u->conf->next_upstream是一系列错误码组合，表示当Nginx与上游服务器交互出现这些错误码时，不能直接
+     * 结束请求，而是需要向下一台上游服务器再次重发。
+     * 如果处理上游服务器请求的时间已经超过了超时时间，那么也会调用ngx_http_upstream_finalize_request
+     * 结束请求。
+     */
     if (u->peer.tries == 0
         || ((u->conf->next_upstream & ft_type) != ft_type)
         || (u->request_sent && r->request_body_no_buffering)
@@ -4465,6 +4484,7 @@ ngx_http_upstream_next(ngx_http_request_t *r, ngx_http_upstream_t *u,
         return;
     }
 
+    /* 如果Nginx与上游服务器的tcp连接还存在，那么需要先关闭，才能继续与上游服务器重新建链 */
     if (u->peer.connection) {
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                        "close http upstream connection: %d",
@@ -4479,30 +4499,45 @@ ngx_http_upstream_next(ngx_http_request_t *r, ngx_http_upstream_t *u,
         }
 #endif
 
+        /* 销毁连接对应的内存池 */
         if (u->peer.connection->pool) {
             ngx_destroy_pool(u->peer.connection->pool);
         }
 
+        /* 关闭Nginx与上游服务器的连接对象 */
         ngx_close_connection(u->peer.connection);
         u->peer.connection = NULL;
     }
 
+    /* 与上游服务器建立tcp连接 */
     ngx_http_upstream_connect(r, u);
 }
 
-
+/*
+ * 在启动upstream机制的时候，ngx_http_upstream_cleanup方法会挂载到原始请求的cleanup链表中，
+ * 这样http框架在请求结束的时候就会调用ngx_http_upstream_cleanup方法。
+ */
 static void
 ngx_http_upstream_cleanup(void *data)
 {
+    /*
+     * ngx_http_upstream_cleanup方法的参数在创建upstream的时候设置为了请求对象ngx_http_request_t。
+     * 详见ngx_http_upstream_init_request()方法
+     */
     ngx_http_request_t *r = data;
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "cleanup http upstream request: \"%V\"", &r->uri);
 
+    /* 以NGX_DONE来调用ngx_http_upstream_finalize_request结束请求 */
     ngx_http_upstream_finalize_request(r, r->upstream, NGX_DONE);
 }
 
-
+/*
+ * upstream机制中用于结束请求的方法，这个方法主要有两个目的:
+ * 1. 释放Nginx与上游服务器交互时分配的资源，如文件句柄、tcp连接等。
+ * 2. 调用ngx_http_finalize_request方法结束Nginx与下游客户端之间的请求。
+ */
 static void
 ngx_http_upstream_finalize_request(ngx_http_request_t *r,
     ngx_http_upstream_t *u, ngx_int_t rc)
@@ -4512,21 +4547,29 @@ ngx_http_upstream_finalize_request(ngx_http_request_t *r,
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "finalize http upstream request: %i", rc);
 
+    /*
+     * 如果u->cleanup为NULL，表示没有需要清理的upstream机制使用的资源，则调用
+     * ngx_http_finalize_request结束客户端请求，其实以NGX_DONE为参数调用的话只会
+     * 把原始请求的引用计数减1，如果引用计数为0，才会真正结束客户端请求。
+     */
     if (u->cleanup == NULL) {
         /* the request was already finalized */
         ngx_http_finalize_request(r, NGX_DONE);
         return;
     }
 
+    /* 将cleanup指向的清理资源回调方法设置为NULL指针 */
     *u->cleanup = NULL;
     u->cleanup = NULL;
 
+    /* 释放解析主机域名时分配的资源 */
     if (u->resolved && u->resolved->ctx) {
         ngx_resolve_name_done(u->resolved->ctx);
         u->resolved->ctx = NULL;
     }
 
     if (u->state && u->state->response_time) {
+        /* 计算响应结束的时间 */
         u->state->response_time = ngx_current_msec - u->state->response_time;
 
         if (u->pipe && u->pipe->read_length) {
@@ -4534,13 +4577,16 @@ ngx_http_upstream_finalize_request(ngx_http_request_t *r,
         }
     }
 
+    /* 调用http模块实现的finalize_request方法 */
     u->finalize_request(r, rc);
 
+    /* 如果tcp连接池实现了free方法，那么会调用该方法释放连接资源 */
     if (u->peer.free && u->peer.sockaddr) {
         u->peer.free(&u->peer, u->peer.data, 0);
         u->peer.sockaddr = NULL;
     }
 
+    /* 如果Nginx与上游服务器之间的tcp连接还存在，则需要关闭这个tcp连接 */
     if (u->peer.connection) {
 
 #if (NGX_HTTP_SSL)
@@ -4565,10 +4611,12 @@ ngx_http_upstream_finalize_request(ngx_http_request_t *r,
                        "close http upstream connection: %d",
                        u->peer.connection->fd);
 
+        /* 删除连接使用的内存池 */
         if (u->peer.connection->pool) {
             ngx_destroy_pool(u->peer.connection->pool);
         }
 
+        /* 关闭连接 */
         ngx_close_connection(u->peer.connection);
     }
 
@@ -4580,6 +4628,7 @@ ngx_http_upstream_finalize_request(ngx_http_request_t *r,
                        u->pipe->temp_file->file.fd);
     }
 
+    /* 如果使用了磁盘文件作为缓存来向下游转发响应，则需要删除用于缓存响应的临时文件 */
     if (u->store && u->pipe && u->pipe->temp_file
         && u->pipe->temp_file->file.fd != NGX_INVALID_FILE)
     {
@@ -4648,14 +4697,22 @@ ngx_http_upstream_finalize_request(ngx_http_request_t *r,
         return;
     }
 
+    /*
+     * rc == 0表示请求是正常处理完毕然后需要关闭请求的，这个时候会以NGX_HTTP_LAST来调用
+     * ngx_http_send_special()方法，催促发送响应
+     */
     if (rc == 0) {
         rc = ngx_http_send_special(r, NGX_HTTP_LAST);
 
     } else if (flush) {
         r->keepalive = 0;
+        /*
+         * NGX_HTTP_FLUSH意味着如果请求r的out缓冲区中依然有等待发送的响应，则"催促"着发送出它们。
+         */
         rc = ngx_http_send_special(r, NGX_HTTP_FLUSH);
     }
 
+    /* 最后还是通过调用http框架提供的ngx_http_finalize_request方法结束客户端与Nginx之间的请求 */
     ngx_http_finalize_request(r, rc);
 }
 
