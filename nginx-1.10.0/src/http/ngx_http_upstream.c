@@ -2909,7 +2909,7 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
 
     /*
      * 调用ngx_http_send_header向客户端发送响应头，在函数ngx_http_upstream_process_headers中我们
-     * 可以看到upstream机制会将从上游服务器中解析到的响应头设置到请求对象ngx_http_upstream_t结构体
+     * 可以看到upstream机制会将从上游服务器中解析到的响应头设置到请求对象ngx_http_request_t结构体
      * 的headers_out.headers成员中。这些响应头就是在这个地方发送给客户端的。
      */
     rc = ngx_http_send_header(r);
@@ -2962,21 +2962,40 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
      * 缓冲区，甚至是临时文件来尽可能多地接收上游服务器的响应数据;如果buffering为0，则只需要开启固定大小
      * 的内存用来缓存上游服务器的响应数据，如果在接收上游服务器响应时缓冲区满了，那么将会暂停接收，等待
      * 缓冲区的数据发送给客户端后缓冲区自然就会清空，于是就可以继续用这块内存缓存响应数据了。
+     * 转发上游响应到下游客户端，这项工作必然是由上游事件来驱动的，因此以下游网速优先实际上只是意味着需要
+     * 开辟一块固定大小的内存作为缓冲区。
      */
     if (!u->buffering) {
 
+        /*
+         * 如果http模块没有重新定义包体处理函数input_filter，则会使用默认的input_filter_init和input_filter。
+         * 此时默认的input_filter函数ngx_http_upstream_non_buffered_filter将会试图在ngx_http_upstream_t
+         * 结构体的buffer成员中缓存全部包体，并且会将每次接收到的存放在buffer成员中的那一段内容用缓冲区
+         * 对象ngx_buf_t管理起来，并挂载到ngx_http_upstream_t结构体中的out_bufs缓冲区链表中，后续发送响应
+         * 的时候就从out_bufs链表中获取其所管理的buffer成员中的内容并发送给客户端。
+         */
         if (u->input_filter == NULL) {
             u->input_filter_init = ngx_http_upstream_non_buffered_filter_init;
             u->input_filter = ngx_http_upstream_non_buffered_filter;
             u->input_filter_ctx = r;
         }
 
+        /*
+         * 设置用来处理Nginx与上游服务器之间的读写事件的处理回调方法，连接对应的读写事件回调处理函数
+         * 自连接建立之后一直都是ngx_http_upstream_handler，在ngx_http_upstream_handler中会依据情况调用
+         * 这里设置在ngx_http_upstream_t对象中的read_event_handler或write_event_handler进行相应读写事件
+         * 的处理。
+         */
         u->read_event_handler = ngx_http_upstream_process_non_buffered_upstream;
         r->write_event_handler =
                              ngx_http_upstream_process_non_buffered_downstream;
 
         r->limit_rate = 0;
 
+        /*
+         * 在处理包体之前，会调用一次input_filter_init回调函数，这个函数一般用来初始化处理包体所需的
+         * 一些变量，有http模块根据业务需要而定。
+         */
         if (u->input_filter_init(u->input_filter_ctx) == NGX_ERROR) {
             ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
             return;
@@ -2999,29 +3018,72 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
             c->tcp_nodelay = NGX_TCP_NODELAY_SET;
         }
 
+        /*
+         * 当upstream机制调用ngx_http_upstream_send_respone方法时，表明是刚解析完响应头并且
+         * 需要转发响应给客户端，那么有可能在接收响应包头的时候会接收到部分的响应包体，所以
+         * 这个时候先要判断是否预接收的部分上游服务器的响应包体。我们之前说过，在调用http
+         * 模块实现的process_header方法时，会移动buffer的pos指针，等到解析完头部后，pos指针
+         * 就指向了last指针或者响应包体开始的位置(如果预接收到了包体的话)。所以这里通过判断
+         * last指针和pos指针是否相等来看是否预接收到了部分包体数据。
+         */
         n = u->buffer.last - u->buffer.pos;
 
+        /*
+         * 如果n不为0，表明预接收到了部分包体数据，那么在继续接收包体之前需要先处理这部分预接收
+         * 到的包体数据。
+         */
         if (n) {
+            /*
+             * 上面说到过，在调用http模块实现的process_header方法后，buffer缓冲区的pos指针会指向包体开始处，
+             * 那么在这里将last指针指向为pos指针指向的内存处，说明此时last指针指向的就是本次接收到的包体的
+             * 起始地址
+             */
             u->buffer.last = u->buffer.pos;
 
-            u->state->response_length += n;
+            u->state->response_length += n;  // 更新接收到的响应数据长度
 
+            /* 调用input_filter方法处理包体数据 */
             if (u->input_filter(u->input_filter_ctx, n) == NGX_ERROR) {
                 ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
                 return;
             }
 
+            /* 向下游发送刚处理过的包体数据 */
             ngx_http_upstream_process_non_buffered_downstream(r);
 
         } else {
+            /*
+             * 程序如果进入else分支，表明没有预接收到包体数据，那么可以将缓冲区清空，用于后续接收包体。
+             * 可能有人会有疑问，buffer缓冲区里面的响应包头数据也可以清空吗?答案是可以的，因为在http
+             * 模块实现的process_header方法解析完包头后就会把头部设置到ngx_http_upstream_t结构体的
+             * headers_in.headers中，然后在ngx_http_upstream_process_headers函数中又会将
+             * ngx_http_upstream_t结构体的 headers_in.headers中的值设置到请求对象ngx_http_request_t
+             * 结构体的headers_out.headers中。所以是可以清除缓冲区中的头部数据的。
+             */
+
+            /*
+             * 这里将pos和last指针指向缓冲区开始处，表明清空缓冲区。
+             * pos指针一般指向未经处理的响应起始位置，last指针指向刚接收到的响应的起始位置。
+             */
             u->buffer.pos = u->buffer.start;
             u->buffer.last = u->buffer.start;
 
+            /* NGX_HTTP_FLUSH标志位意味着如果请求r的out的缓冲区中依然有等待发送的响应，
+             * 则"催促"这发送他们
+             */
             if (ngx_http_send_special(r, NGX_HTTP_FLUSH) == NGX_ERROR) {
                 ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
                 return;
             }
 
+            /*
+             * 如果Nginx与上游服务器连接上有读事件，那么调用ngx_http_upstream_process_non_buffered_upstream
+             * 方法进行处理，否则当前流程结束，将控制权交还给Nginx的事件模块。
+             * 注意到如果u->length == 0时，也是会调用ngx_http_upstream_process_non_buffered_upstream方法的，
+             * 为什么呢?因为u->length == 0表明已经接收到了全部上游服务器响应，虽然这里调用该方法处理
+             * Nginx与上游服务器之间读事件，但是在最终执行读操作的时候还是会依据u->length == 0作为条件判断
+             * 进一步动作，u->length == 0是会首先向下游客户端发送响应。
+             */
             if (u->peer.connection->read->ready || u->length == 0) {
                 ngx_http_upstream_process_non_buffered_upstream(r, u);
             }
@@ -3534,6 +3596,7 @@ ngx_http_upstream_process_non_buffered_downstream(ngx_http_request_t *r)
     ngx_connection_t     *c;
     ngx_http_upstream_t  *u;
 
+    /* 获取Nginx与下游客户端之间连接对象 */
     c = r->connection;
     u = r->upstream;
     wev = c->write;
@@ -3543,6 +3606,7 @@ ngx_http_upstream_process_non_buffered_downstream(ngx_http_request_t *r)
 
     c->log->action = "sending to client";
 
+    /* 判断Nginx与下游客户端之间的读事件是否超时，如果超时，则需要结束请求 */
     if (wev->timedout) {
         c->timedout = 1;
         ngx_connection_error(c, NGX_ETIMEDOUT, "client timed out");
@@ -3550,16 +3614,24 @@ ngx_http_upstream_process_non_buffered_downstream(ngx_http_request_t *r)
         return;
     }
 
+    /*
+     * 这个函数才是真正用来以固定内存块作为缓冲区时转发响应的。当处理Nginx与下游客户端写事件时，
+     * 会以1来调用ngx_http_upstream_process_non_buffered_request。
+     */
     ngx_http_upstream_process_non_buffered_request(r, 1);
 }
 
-
+/*
+ * 当需要向客户端转发响应并且buffering标志位为0时候，则会调用这个函数来处理
+ * Nginx与上游服务器之间的读事件
+ */
 static void
 ngx_http_upstream_process_non_buffered_upstream(ngx_http_request_t *r,
     ngx_http_upstream_t *u)
 {
     ngx_connection_t  *c;
 
+    /* 获取Nginx与上游服务器之间的连接对象 */
     c = u->peer.connection;
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0,
@@ -3567,16 +3639,25 @@ ngx_http_upstream_process_non_buffered_upstream(ngx_http_request_t *r,
 
     c->log->action = "reading upstream";
 
+    /* 判断Nginx与上游服务器连接的读事件是否超时，如果超时，则需要结束请求 */
     if (c->read->timedout) {
         ngx_connection_error(c, NGX_ETIMEDOUT, "upstream timed out");
         ngx_http_upstream_finalize_request(r, u, NGX_HTTP_GATEWAY_TIME_OUT);
         return;
     }
 
+    /*
+     * 这个函数才是真正用来以固定内存块作为缓冲区时转发响应的。当处理Nginx与上游服务器的读事件时，
+     * 会以0来调用ngx_http_upstream_process_non_buffered_request。
+     */
     ngx_http_upstream_process_non_buffered_request(r, 0);
 }
 
-
+/*
+ * 在以固定内存块作为缓冲区接收并转发响应时，无论是接收上游服务器的响应，还是向下游客户端发送响应，
+ * 最终都是调用这个方法，唯一的区别就是传递给该方法的第二个参数不同，当需要读取上游的响应时传递的是
+ * 0，当需要向下游客户端转发响应时传递的是1。
+ */
 static void
 ngx_http_upstream_process_non_buffered_request(ngx_http_request_t *r,
     ngx_uint_t do_write)
@@ -3589,19 +3670,49 @@ ngx_http_upstream_process_non_buffered_request(ngx_http_request_t *r,
     ngx_http_upstream_t       *u;
     ngx_http_core_loc_conf_t  *clcf;
 
+    /* 获取Nginx与上游服务器和下游客户端之间的连接对象 */
     u = r->upstream;
     downstream = r->connection;
     upstream = u->peer.connection;
 
+    /* 获取存放包体的buffer缓冲区 */
     b = &u->buffer;
 
+    /*
+     * do_write参数用来判断是否需要向下游客户端发送响应数据，do_write为1表明需要向下游发送响应，
+     * 为0则不需要。这里会有对这个参数的进一步初始化。
+     * u->length == 0表明已经接收到了所有的上游服务器响应，那么现在就只需要向下游发送响应了。
+     * 此时do_write也需要为1.
+     */
     do_write = do_write || u->length == 0;
 
     for ( ;; ) {
 
+        /* do_write为1，则需要向下游发送响应数据 */
         if (do_write) {
 
+            /*
+             *     首先检查缓冲区中来自上游的响应包体，是否还有未转发给下游的。我们知道每次接收到
+             * 上游的响应包体后，都会调用input_filter方法来处理包体，默认的input_filter方法中会用
+             * 缓冲区对象ngx_buf_t来管理每次接收到的存放在buffer中的那部分响应数据，并挂载到out_bufs中。
+             * 所以就需要检查out_bufs链表。
+             *     另外，为什么需要检查busy_bufs链表呢?因为可能之前在调用
+             * ngx_http_output_filter方法发送响应数据时，没能一次性将所有的数据发送完，这个时候就会
+             * 调用ngx_chain_update_chains更新out_bufs链表，更新后busy_bufs指向out_bufs中没有发送给
+             * 客户端那部分缓冲区链表，并将已经发送出去的缓冲区回收到free_bufs链表中。注意这三个缓冲区
+             * 链表都是没有分配实际内存的，实际用于存储包体的内存都是ngx_http_upstream_t中的buffer成员。
+             */
             if (u->out_bufs || u->busy_bufs) {
+                /*
+                 *     这里调用ngx_http_output_filter方法发送out_bufs中管理的包体数据，为什么不需要发送
+                 * busy_bufs中的数据呢?刚刚说到busy_bufs指向的是上次调用ngx_http_output_filter方法
+                 * 未发送完的缓存，这个时候请求对象ngx_http_reqeust_t结构体中的out缓冲区链表已经保存了
+                 * 它的内容，这样就不需要再次发送busy_bufs了。
+                 *     我们知道在ngx_http_output_filter函数执行的调用链中，其实也会把out_bufs中管理的
+                 * 响应数据先挂载到ngx_http_request_t结构体的out成员中，然后再发送out成员中数据，这样
+                 * 就保证了先发送上次未发送完的响应，然后再接着发送本次需要发送的响应，保证的发送响应的
+                 * 顺序。
+                 */
                 rc = ngx_http_output_filter(r, u->out_bufs);
 
                 if (rc == NGX_ERROR) {
@@ -3609,12 +3720,31 @@ ngx_http_upstream_process_non_buffered_request(ngx_http_request_t *r,
                     return;
                 }
 
+                /*
+                 * ngx_chain_update_chains方法做了如下三件事情:
+                 * 1. 将out_bufs中的缓冲区全部挂载到busy_bufs中。(此时可能out_bufs中有部分缓冲区内容
+                 *     已经发送给客户端了)
+                 * 2. 清空out_bufs缓冲区，因为已经由busy_bufs接管了out_bufs中管理的缓冲区链表。清空
+                 *    out_bufs之后又可以用来管理后续存放着响应的缓冲区了。
+                 * 3. 将busy_bufs中已经发送完的缓冲区结构体清空(pos和last指向start)，并将其挂载到
+                 *    free_bufs链表中，因为后续接收到包体后，就会从free_bufs中获取一个空的缓冲区对象
+                 *    用来管理buffer中本次接收的响应数据，然后挂载到out_bufs中。
+                 */
                 ngx_chain_update_chains(r->pool, &u->free_bufs, &u->busy_bufs,
                                         &u->out_bufs, u->output.tag);
             }
 
+            /*
+             * u->busy_bufs == NULL表明到目前为止需要向下游客户端发送的响应都已经全部发送完了，也就是说
+             * 请求对象ngx_http_request_t结构体中的out缓冲区都已经发送完了，这个时候可以将upstream对象中
+             * 的buffer重置，这样就能接收更多的响应数据了。
+             */
             if (u->busy_bufs == NULL) {
 
+                /*
+                 * u->length == 0表明已经接收了所有的上游响应，并且上面有已经发送完了所有响应，
+                 * 那么这个时候就可以结束请求了。
+                 */
                 if (u->length == 0
                     || (upstream->read->eof && u->length == -1))
                 {
@@ -3637,21 +3767,35 @@ ngx_http_upstream_process_non_buffered_request(ngx_http_request_t *r,
                     return;
                 }
 
+                /* 重置buffer缓冲区，即pos和last指针都指向start */
                 b->pos = b->start;
                 b->last = b->start;
             }
         }
 
+        /*
+         * 检查buffer缓冲区中是否还有剩余的空间用来接收上游服务器发来的响应，如果size不等于则表明还有
+         * 空间可以用于接收响应，如果size等于0，表明缓冲区已经满了，暂时不接收来自上游服务器的响应了。
+         */
         size = b->end - b->last;
 
+        /*
+         * 当缓冲区中还有剩余可用空间，并且Nginx与上游服务器连接读事件也已经就绪，那么就会调用recv方法
+         * 接收上游服务器发来的响应数据。
+         */
         if (size && upstream->read->ready) {
 
             n = upstream->recv(upstream, b->last, size);
 
+            /* 如果recv返回NGX_AGAIN，则表明此次没有接收到包体，期待epoll下次有读事件时再次调度 */
             if (n == NGX_AGAIN) {
                 break;
             }
 
+            /*
+             * n > 0表明接收到了包体数据，则调用input_filter方法处理这部分包体，
+             * 并更新接收接收到的响应长度
+             */
             if (n > 0) {
                 u->state->response_length += n;
 
@@ -3661,16 +3805,32 @@ ngx_http_upstream_process_non_buffered_request(ngx_http_request_t *r,
                 }
             }
 
+            /*
+             * 2016-09-15 问题:
+             * recv如果返回0或者NGX_ERROR，程序也会执行到这里，此时还是会向客户端发送接收到的响应，
+             * 为什么这里不需要对这两种情况做特殊处理而是继续向下游客户端发送包体呢?
+             */
+
+            /*
+             * 将do_write置位，下面的continue会导致返回for循环重新执行，加上do_write为1，此时会向
+             * 客户端发送响应。
+             */
             do_write = 1;
 
             continue;
         }
 
+        /* 程序执行到这里表明缓冲区已经满了，暂时不接收来自上游服务器的响应了。于是将控制权还给事件模块 */
         break;
     }
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
+    /*
+     * downstream这个连接表示的是Nginx与下游客户端之间的连接对象，此时的data成员表示的是可以往下游客户端
+     * 发送响应的请求，downstream->data == r表明当前请求就是那个可以往客户端发送响应的请求，这个时候就需要
+     * 将写事件加入到epoll中，一旦连接可写就往下游发送响应，否则后续需要往客户端发送响应的请求就阻塞了。
+     */
     if (downstream->data == r) {
         if (ngx_handle_write_event(downstream->write, clcf->send_lowat)
             != NGX_OK)
@@ -3680,6 +3840,7 @@ ngx_http_upstream_process_non_buffered_request(ngx_http_request_t *r,
         }
     }
 
+    /* 将Nginx与下游客户端连接对应的写事件加入到定时器 */
     if (downstream->write->active && !downstream->write->ready) {
         ngx_add_timer(downstream->write, clcf->send_timeout);
 
@@ -3687,11 +3848,13 @@ ngx_http_upstream_process_non_buffered_request(ngx_http_request_t *r,
         ngx_del_timer(downstream->write);
     }
 
+    /* 将Nginx与上游服务器连接对应的读事件加入到epoll中 */
     if (ngx_handle_read_event(upstream->read, 0) != NGX_OK) {
         ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
         return;
     }
 
+    /* 将Nginx与上游服务器连接对象的读事件加入到定时器中 */
     if (upstream->read->active && !upstream->read->ready) {
         ngx_add_timer(upstream->read, u->conf->read_timeout);
 

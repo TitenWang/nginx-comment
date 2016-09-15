@@ -198,7 +198,7 @@ ngx_chain_update_chains(ngx_pool_t *p, ngx_chain_t **free, ngx_chain_t **busy,
 
     *out = NULL;
 
-    /* 将busy中的链表节点清空后加入到free链表中 */
+    /* 将busy中的链表中内容已空的缓冲区节点清空后加入到free链表中 */
     while (*busy) {
         cl = *busy;
 
