@@ -32,7 +32,10 @@ struct ngx_event_pipe_s {
      */
     ngx_chain_t       *free_raw_bufs;
 
-    /* 表示接收到的上游服务器的响应缓冲区，在input_filter方法中会将free_raw_bufs中的缓冲区挂载到in中 */
+    /*
+     * 表示接收到的上游服务器的响应缓冲区，在input_filter方法中会将free_raw_bufs中的缓冲区挂载到in中
+     * in链表中的缓冲区指向的是内存
+     */
     ngx_chain_t       *in;
 
     /* 指向刚刚接收到的缓冲区 */
@@ -42,7 +45,7 @@ struct ngx_event_pipe_s {
 
     /*
      * 保存着将要发送给客户端的缓冲区链表，在将in链表中的内容写入临时文件时就会将内容已写入的
-     * 缓冲区挂载到out中，这些缓冲区对应的也就指向了文件中
+     * 缓冲区挂载到out中，out链表中的缓冲区对应的也就指向了文件中
      */
     ngx_chain_t       *out;
 

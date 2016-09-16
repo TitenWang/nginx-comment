@@ -426,7 +426,10 @@ ngx_event_pipe_read_upstream(ngx_event_pipe_t *p)
 
                 /* STUB */ cl->buf->num = p->num++;
 
-                /* 处理这个缓冲区中的响应包体 */
+                /* 
+                 * 处理这个缓冲区中的响应包体，默认方法ngx_event_pipe_copy_input_filter
+                 * 会将cl->buf挂载到p->in链表中
+                 */
                 if (p->input_filter(p, cl->buf) == NGX_ERROR) {
                     return NGX_ABORT;
                 }
