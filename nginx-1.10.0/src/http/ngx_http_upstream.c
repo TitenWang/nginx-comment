@@ -3186,22 +3186,28 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
 
 #endif
 
+    /*
+     * 下面的流程是以上游网速优先转发响应的处理流程，即ngx_http_upstream_conf_t中的buffering
+     * 标志位为1的情况。
+     */
     p = u->pipe;
 
+    /* output_filter是upstream以上游网速优先转发响应时向下游客户端转发响应的方法 */
     p->output_filter = ngx_http_upstream_output_filter;
-    p->output_ctx = r;
+    p->output_ctx = r;  // output_ctx是output_filter的参数，在这里设置为请求对象
     p->tag = u->output.tag;
-    p->bufs = u->conf->bufs;
-    p->busy_size = u->conf->busy_buffers_size;
-    p->upstream = u->peer.connection;
-    p->downstream = c;
+    p->bufs = u->conf->bufs;  // 设置内存缓冲区的限制
+    p->busy_size = u->conf->busy_buffers_size;  // 设置busy缓冲区中待发送响应的长度触发值。
+    p->upstream = u->peer.connection;  // 设置Nginx与上游服务器之间的连接
+    p->downstream = c;  // 设置Nginx与下游客户端之间的连接
     p->pool = r->pool;
     p->log = c->log;
-    p->limit_rate = u->conf->limit_rate;
-    p->start_sec = ngx_time();
+    p->limit_rate = u->conf->limit_rate;  // 设置限速功能速率
+    p->start_sec = ngx_time();  // 设置开始发送响应的时间戳
 
-    p->cacheable = u->cacheable || u->store;
+    p->cacheable = u->cacheable || u->store;  // 设置是否启用文件缓存标志位
 
+    /* 创建存放上游响应的临时文件 */
     p->temp_file = ngx_pcalloc(r->pool, sizeof(ngx_temp_file_t));
     if (p->temp_file == NULL) {
         ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
@@ -3210,7 +3216,7 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
 
     p->temp_file->file.fd = NGX_INVALID_FILE;
     p->temp_file->file.log = c->log;
-    p->temp_file->path = u->conf->temp_path;
+    p->temp_file->path = u->conf->temp_path;  // 设置临时文件的存放路径
     p->temp_file->pool = r->pool;
 
     if (p->cacheable) {
@@ -3228,6 +3234,10 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
                              "to a temporary file";
     }
 
+    /*
+     * max_temp_file_size用于设置缓存响应的临时文件的最大长度
+     * temp_file_write_size用于设置一次性可以往缓存响应的临时文件写入的最大长度
+     */
     p->max_temp_file_size = u->conf->max_temp_file_size;
     p->temp_file_write_size = u->conf->temp_file_write_size;
 
@@ -3238,16 +3248,23 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
     }
 #endif
 
+    /*
+     * 初始化预读缓冲区链表preread_bufs.预读就是指在接收包头的时候也接收到了部分的响应包体。
+     * 该链表的缓冲区是不会分配实际内存来存放上游响应内容的，而仅使用ngx_buf_t缓冲区对象指向
+     * 实际的存放响应包体的内存，即ngx_http_upstream_t中的buffer成员
+     */
     p->preread_bufs = ngx_alloc_chain_link(r->pool);
     if (p->preread_bufs == NULL) {
         ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
         return;
     }
 
+    /* 指向ngx_http_upstream_t中的buffer成员，该成员存放着实际接收的响应内容 */
     p->preread_bufs->buf = &u->buffer;
     p->preread_bufs->next = NULL;
-    u->buffer.recycled = 1;
+    u->buffer.recycled = 1;  // 将buffer成员的回收标志位置位
 
+    /* 计算预读的响应包体的长度 */
     p->preread_size = u->buffer.last - u->buffer.pos;
 
     if (u->cacheable) {
@@ -3276,7 +3293,7 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
      * event_pipe would do u->buffer.last += p->preread_size
      * as though these bytes were read
      */
-    u->buffer.last = u->buffer.pos;
+    u->buffer.last = u->buffer.pos;  // 将last指针设置为pos指针，指向包体的开始位置
 
     if (u->conf->cyclic_temp_file) {
 
@@ -3293,12 +3310,18 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
         p->cyclic_temp_file = 0;
     }
 
+    /* 设置Nginx读取上游响应的超时时间 */
     p->read_timeout = u->conf->read_timeout;
+
+    /* 设置Nginx发送响应到下游的超时时间 */
     p->send_timeout = clcf->send_timeout;
+
+    /* 设置Nginx向下游发送响应时tcp的发送"水位"线 */
     p->send_lowat = clcf->send_lowat;
 
     p->length = -1;
 
+    /* 调用处理包体前的初始化方法 */
     if (u->input_filter_init
         && u->input_filter_init(p->input_ctx) != NGX_OK)
     {
@@ -3306,9 +3329,16 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
         return;
     }
 
+    /* 设置处理上游连接读事件的回调方法 */
     u->read_event_handler = ngx_http_upstream_process_upstream;
+
+    /* 设置处理下游连接写事件的回调方法 */
     r->write_event_handler = ngx_http_upstream_process_downstream;
 
+    /* 
+     * 因为向下游转发响应这个动作肯定是由上游事件来驱动的，所以这里先调用
+     * ngx_http_upstream_process_upstream处理上游的读事件
+     */
     ngx_http_upstream_process_upstream(r, u);
 }
 
@@ -4015,7 +4045,7 @@ ngx_http_upstream_thread_event_handler(ngx_event_t *ev)
 
 #endif
 
-
+/* upstream机制以上游网速优先转发响应时向下游客户端转发响应的方法 */
 static ngx_int_t
 ngx_http_upstream_output_filter(void *data, ngx_chain_t *chain)
 {
@@ -4033,7 +4063,7 @@ ngx_http_upstream_output_filter(void *data, ngx_chain_t *chain)
     return rc;
 }
 
-
+/* 处理Nginx与下游客户端之间连接写事件的回调方法 */
 static void
 ngx_http_upstream_process_downstream(ngx_http_request_t *r)
 {
@@ -4042,6 +4072,7 @@ ngx_http_upstream_process_downstream(ngx_http_request_t *r)
     ngx_event_pipe_t     *p;
     ngx_http_upstream_t  *u;
 
+    /* 获取Nginx与下游服务器连接及其写事件 */
     c = r->connection;
     u = r->upstream;
     p = u->pipe;
@@ -4056,13 +4087,21 @@ ngx_http_upstream_process_downstream(ngx_http_request_t *r)
     p->aio = r->aio;
 #endif
 
+    /*
+     * 首先判断写事件是否超时，wev->timeout为1表示写事件已经超时了，但是如果是限速功能引起的超时，则并不是
+     * 真正意义上的超时。如果wev->delayed为1则表明是限速引起的写事件超时，这个时候需要继续处理Nginx与下游
+     * 客户端之间的写事件
+     */
     if (wev->timedout) {
 
+        /* wev->delayed为1表明是限速引起的超时，此时需要继续处理写事件 */
         if (wev->delayed) {
 
+            /* 将超时和限速标志位清零 */
             wev->timedout = 0;
             wev->delayed = 0;
 
+            /* 如果这个时候写事件还没有就绪，则需要将写事件加入定时器和epoll */
             if (!wev->ready) {
                 ngx_add_timer(wev, p->send_timeout);
 
@@ -4073,19 +4112,21 @@ ngx_http_upstream_process_downstream(ngx_http_request_t *r)
                 return;
             }
 
+            /* 写事件就绪，则调用ngx_event_pipe处理写事件，此时传递给该方法的第二个参数应该是1 */
             if (ngx_event_pipe(p, wev->write) == NGX_ABORT) {
                 ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
                 return;
             }
 
-        } else {
+        } else {  /* 程序执行到这里的话表明Nginx与下游客户端之间的连接超时了，设置相关标志位 */
             p->downstream_error = 1;
             c->timedout = 1;
             ngx_connection_error(c, NGX_ETIMEDOUT, "client timed out");
         }
 
-    } else {
+    } else {  /* 程序执行到这里的话表明写事件并没有超时，而是有epoll触发的 */
 
+        /* 如果wev->delayed为1，则说明需要继续进行限速处理，暂时不处理写事件，并加写事件加入到epoll中 */
         if (wev->delayed) {
 
             ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0,
@@ -4098,16 +4139,18 @@ ngx_http_upstream_process_downstream(ngx_http_request_t *r)
             return;
         }
 
+        /* 调用ngx_event_pipe方法处理写事件，注意第二个参数是1. */
         if (ngx_event_pipe(p, 1) == NGX_ABORT) {
             ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
             return;
         }
     }
 
+    /* 对上下游的连接状态做一些判断和相应的处理 */
     ngx_http_upstream_process_request(r, u);
 }
 
-
+/* 处理Nginx与上游服务器连接读事件的回调方法 */
 static void
 ngx_http_upstream_process_upstream(ngx_http_request_t *r,
     ngx_http_upstream_t *u)
@@ -4116,6 +4159,7 @@ ngx_http_upstream_process_upstream(ngx_http_request_t *r,
     ngx_event_pipe_t  *p;
     ngx_connection_t  *c;
 
+    /* 获取Nginx与上游服务器连接对象及其读事件 */
     c = u->peer.connection;
     p = u->pipe;
     rev = c->read;
@@ -4125,10 +4169,21 @@ ngx_http_upstream_process_upstream(ngx_http_request_t *r,
 
     c->log->action = "reading upstream";
 
+    /*
+     * 检查读事件是否超时，如果rev->timeout为1，表示读事件已经超时了，但是这个超时可能是由于限速引起的，
+     * 所以还需要判断是否是限速引起的，如果rev->delayed为1，表示对Nginx与上游服务器连接读事件进行了限速
+     * 这个时候并不是真正意义上的超时
+     */
     if (rev->timedout) {
 
+        /*
+         * 如果是限速引起的本次读事件超时，这并不是连接出错，而属于正常情况，在这个时候如果读事件
+         * 还没有就绪，那么需要再次将读事件加入到定时器和epoll中。如果此时读事件是就绪的，那么就需要
+         * 调用ngx_event_pipe处理读事件，注意此时传递给该函数的第二个参数是0
+         */
         if (rev->delayed) {
 
+            /* 清空超时和延迟处理标志位 */
             rev->timedout = 0;
             rev->delayed = 0;
 
@@ -4147,13 +4202,14 @@ ngx_http_upstream_process_upstream(ngx_http_request_t *r,
                 return;
             }
 
-        } else {
+        } else {  /* 这里就是真正的超时了，此时将upstream_error置位 */
             p->upstream_error = 1;
             ngx_connection_error(c, NGX_ETIMEDOUT, "upstream timed out");
         }
 
-    } else {
+    } else {  /* 进入这个分支说明Nginx与上游服务器的读事件并没有超时，则进行读事件的处理流程 */
 
+        /* 如果rev->delayed为1，表明需要继续进行限速处理，所以暂时不处理读事件，将读事件加入epoll并返回 */
         if (rev->delayed) {
 
             ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0,
@@ -4166,12 +4222,13 @@ ngx_http_upstream_process_upstream(ngx_http_request_t *r,
             return;
         }
 
+        /* 调用ngx_event_pipe处理Nginx与上游服务器连接的读事件，其中第二个参数为0 */
         if (ngx_event_pipe(p, 0) == NGX_ABORT) {
             ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
             return;
         }
     }
-
+    /* 对上下游的连接状态做一些判断和处理 */
     ngx_http_upstream_process_request(r, u);
 }
 
