@@ -821,20 +821,44 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
     ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "epoll timer: %M", timer);
 
-    /*通过系统调用epoll_wait获取已经发生的事件，返回值为获取的就绪事件个数，如果为-1，表示调用出错*/
+    /*
+     *     通过系统调用epoll_wait获取已经发生的事件，返回值为获取的就绪事件个数，如果为-1，表示调用出错。
+     * 如果timer的值为NGX_TIMER_INFINITE，则表示无限期阻塞，除非有中断发生或者确实收到了足够的就绪事件，
+     * epoll也会返回。如果是中断导致epoll_wait返回，则会返回错误码。如果是收到了足够多的事件返回，则
+     * 返回事件数目。
+     */
+    /*
+     *     When successful, epoll_wait() returns the number of file descriptors
+     *  ready for the requested I/O, or zero if no file descriptor became
+     *  ready during the requested timeout milliseconds.  When an error
+     *  occurs, epoll_wait() returns -1 and errno is set appropriately.
+     */
     events = epoll_wait(ep, event_list, (int) nevents, timer);
 
     err = (events == -1) ? ngx_errno : 0;
 
-	//更新时间
+	/*
+	 *     从ngx_process_events_and_timers实现可以看出因为时间更新了才会去检测超时事件。更新事件正是在这个
+	 * 地方执行的，Nginx提供了两种更新缓存时间的方法:
+	 *     1. 通过配置timer_resolution指令，创建一个时长为ngx_timer_resolution的定时器，等这个定时器超时了，
+	 * 就会调用ngx_timer_signal_timer()将ngx_event_timer_alarm置位，等执行到这个地方就会去更新时间了。
+	 *     2. 通过获取距离当前缓存时间最近的一个事件的超时时间与当前缓存时间的间隔，然后将这个时间间隔传递给
+	 * epoll_wait，并将flags设为NGX_UPDATE_TIME，则epoll_wait会阻塞这个时间间隔的时长，则epoll_wait返回后
+	 * 就有超时事件发生了，这个时候由于NGX_UPDATE_TIME标志，也会去更新缓存时间。
+	 * 
+     */
     if (flags & NGX_UPDATE_TIME || ngx_event_timer_alarm) {
         ngx_time_update();
     }
 
     /*错误处理*/
     if (err) {
-        if (err == NGX_EINTR) {
+        if (err == NGX_EINTR) { // 如果epoll_wait返回的错误码是EINTR，表明是中断导致epoll_wait从阻塞状态返回的
 
+            /*
+             * ngx_event_timer_alarmw为1，表明是定时器超时触发的中断，这个时候在上面已经更新了缓存时间，所以
+             * 需要将该标志位清零。等待下一次更新时间到了，这个标志位会再被置位。
+             */
             if (ngx_event_timer_alarm) {
                 ngx_event_timer_alarm = 0;
                 return NGX_OK;
@@ -850,7 +874,7 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
         return NGX_ERROR;
     }
 
-	/*如果就绪的事件为0，且timer不为NGX_TIMER_INFINITE，则立刻返回*/
+	/*如果就绪的事件为0，且timer不为NGX_TIMER_INFINITE，表明是epoll_wait自身timeout了，则立刻返回*/
     if (events == 0) {
         if (timer != NGX_TIMER_INFINITE) {
             return NGX_OK;

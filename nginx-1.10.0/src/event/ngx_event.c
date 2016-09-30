@@ -253,13 +253,15 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
     ngx_msec_t  timer, delta;
 
     /*
-     *     如果配置文件中使用了timer_resolution配置项，则对应的ngx_timer_resolution大于0，表明需要定时对缓存时间进行更新
-     * 执行更新操作的时间间隔就是ngx_timer_resolution。此时将timer参数设置为-1，并传给ngx_process_events()，在这个
-     * 函数中,epoll_wait()因为timer为-1，在检测不到事件的时候不要等待，直接搜集所有已经就绪的事件然后返回。那这个
-     * 配置项是如何起作用的呢?
-     *     在函数ngx_event_process_init()中如果检测到ngx_timer_resolution大于0，则会调用系统调用settimer设置一个定时器，
-     * 定时时长就是ngx_timer_resolution，等定时器超时后会调用超时回调函数ngx_timer_signal_timer()，在这个函数中会将
-     * 更新时间标志位ngx_event_timer_alarm置1，然后在ngx_process_events()如果检测到ngx_event_timer_alarm为1，就更新时间。
+     *     如果配置文件中使用了timer_resolution配置项，则对应的ngx_timer_resolution大于0，表明需要定时对缓存时间
+     * 进行更新执行更新操作的时间间隔就是ngx_timer_resolution。此时将timer参数设置为NGX_TIMER_INFINITE，并传给
+     * ngx_process_events()，在这个函数中,如果有事件发生，则获取到事件之后epoll_wait就会返回；如果这个时候一直没有
+     * 请求事件发生epoll_wait会一致阻塞NGX_TIMER_INFINITE时长。在配置了timer_resolution命令时如何更新时间呢?
+     *     在函数ngx_event_process_init()中如果检测到ngx_timer_resolution大于0，则会调用系统调用settimer设置一个
+     * 定时器，定时时长就是ngx_timer_resolution，等定时器超时后会调用超时回调函数ngx_timer_signal_timer()，这个函数
+     * 会将更新时间标志位ngx_event_timer_alarm置1，epoll_wait如果在阻塞状态此时也会返回，然后在ngx_process_events()
+     * 如果检测到ngx_event_timer_alarm为1，就更新时间，然后ngx_process_events返回后就可以对事件进行超时检测了，因为
+     * ngx_current_msec变了，下面的实现就会调用ngx_event_expire_timers()函数对事件进行超时检测。
      *     那如果配置文件中没有使用timer_resolution配置项，那么会走else分支，这个时候是怎么实现更新缓存时间的呢?
      *     实现中通过调用ngx_event_find_timer()函数，获取距离当前缓存时间最近的超时事件与当前缓存时间的间隔，即timer。
      * 并将flags设置为NGX_UPDATE_TIME,这个标志位表明需要更新缓存时间。在执行ngx_process_events()时将这两个参数传进去，
@@ -295,14 +297,22 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
              * 在打开负载均衡锁的情况下，只有调用ngx_trylock_accept_mutex方法后，获取到了负载均衡锁后，
              * 当前的worker子进程才会去监听web端口
              */
-            if (ngx_trylock_accept_mutex(cycle) == NGX_ERROR) {  //获取到了负载均衡锁，使能所有监听端口连接读事件
+            if (ngx_trylock_accept_mutex(cycle) == NGX_ERROR) {  // 获取到了负载均衡锁，使能所有监听端口连接读事件
                 return;
             }
 
             if (ngx_accept_mutex_held) {
-                flags |= NGX_POST_EVENTS;  //用于延后处理事件，避免长时间占用accpet_mutex
+                flags |= NGX_POST_EVENTS;  // 用于延后处理事件，避免长时间占用accpet_mutex
 
-            } else {   //没有获取到锁，则ngx_accept_mutex_delay秒后再次尝试获取
+            } else {
+                /*
+                 * 没有获取到锁，则ngx_accept_mutex_delay秒后再次尝试获取，这个具体是怎么体现的呢?
+                 * 这里将ngx_accept_mutex_delay赋值给局部变量timer，然后传递给ngx_process_events函数，
+                 * 如果采用的是epoll，那么这个函数就是ngx_epoll_process_events。在ngx_epoll_process_events
+                 * 中会将timer作为epoll_wait的参数，表示如果没有事件发生，则epoll_wait会阻塞timer时长，
+                 * 等epoll_wait因为超时返回后，则会继续向下执行。等再一次执行到ngx_process_events_and_timers()
+                 * 时又可以去抢锁了。从而达到了过ngx_accept_mutex_delay秒后再次尝试获取的效果(时长可能不是很准)
+                 */
                 if (timer == NGX_TIMER_INFINITE
                     || timer > ngx_accept_mutex_delay)
                 {
@@ -314,26 +324,50 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
 
     delta = ngx_current_msec;
 
-    /*如果是epoll模块，则ngx_process_events为ngx_epoll_process_events*/
+    /* 如果是epoll模块，则ngx_process_events为ngx_epoll_process_events */
     (void) ngx_process_events(cycle, timer, flags);
 
+    /*
+     * Nginx采用的是缓存时间，因此如果在ngx_process_events()函数中没有对时间进行更新，那么
+     * ngx_current_msec是不会变的，这个时候也就不会执行对事件的超时检测。
+     */
     delta = ngx_current_msec - delta;
 
     ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "timer delta: %M", delta);
 
-    /*优先处理ngx_posted_accept_events队列，然后释放负载均衡锁*/
+    /*
+     * 优先处理ngx_posted_accept_events队列，然后释放负载均衡锁，这个时候由于还在处理缓存的新建连接事件，
+     * 则不能释放负载均衡锁，因为在处理新建连接事件的时候还需要从对应的监听套接口对象中获取相关的数据，
+     * 如对端ip等，所以必须独占。等到处理完了缓存的新建连接事件，则需要尽快释放负载均衡锁，以让其他进程
+     * 可以获取锁处理后续的新建连接。
+     * 因为连接套接口(已经建链)自始至终只会被一个进程占有，不存在多进程竞争的现象，所以可以在释放了负载均衡锁
+     * 之后再处理
+     */
     ngx_event_process_posted(cycle, &ngx_posted_accept_events);
 
+    /*
+     * 这个地方只是释放了负载均衡锁，而并没有将监听套接口从进程的监控机制中删除，所以可能在处理ngx_posted_events
+     * 队列中的普通读写事件时，互斥锁被另外一个进程抢到并且该进程也会把监听套接口加入到该进程的监听机制中。所以
+     * 在同一时刻，监听套接口可以被多个进程拥有(加入到监控机制中，如epoll)，但是，在同一时刻，监听套接口只能被抢到
+     * 了互斥锁的进程进行监控(调用epoll_wait)，因此进程在处理完ngx_posted_events中的事件后再去获取锁，发现锁已经被
+     * 其他进程抢走了，那么进程会获取锁失败，这个时候就会把监听套接口从自身的监听机制中删除，然后在ngx_process_events
+     * 函数中再调用epoll_wait去监控连接套接口中的事件。这样就保证了在同一时刻只会有一个进程去监控监听套接口中的新建
+     * 连接事件
+     */
     if (ngx_accept_mutex_held) {
-        ngx_shmtx_unlock(&ngx_accept_mutex);  //处理完新连接队列，释放负载均衡锁，其实个人认为不一定要在这里释放
+        ngx_shmtx_unlock(&ngx_accept_mutex);  // 处理完新连接队列，释放负载均衡锁
     }
 
-    if (delta) {  //delta更新，说明可能有超时事件
+    if (delta) {  // delta不为0表明缓存时间有更新，可能有超时事件
         ngx_event_expire_timers();
     }
 
-    /*处理ngx_posted_events队列中的普通读写事件*/
+    /*
+     * 处理ngx_posted_events队列中的普通读写事件 
+     * 因为连接套接口(已经建链)自始至终只会被一个进程占有，不存在多进程竞争的现象，所以可以在释放了
+     * 负载均衡锁之后再处理
+     */
     ngx_event_process_posted(cycle, &ngx_posted_events);
 }
 
