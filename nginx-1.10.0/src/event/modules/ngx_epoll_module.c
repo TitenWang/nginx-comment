@@ -823,11 +823,16 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
 
     /*
      *     通过系统调用epoll_wait获取已经发生的事件，返回值为获取的就绪事件个数，如果为-1，表示调用出错。
-     * 如果timer的值为NGX_TIMER_INFINITE，则表示无限期阻塞，除非有中断发生或者确实收到了足够的就绪事件，
-     * epoll也会返回。如果是中断导致epoll_wait返回，则会返回错误码。如果是收到了足够多的事件返回，则
+     * 如果timer的值为NGX_TIMER_INFINITE，则表示无限期阻塞，除非有中断发生或者确实收到了I/O就绪事件，
+     * epoll也会返回。如果是中断导致epoll_wait返回，则会返回错误码。如果是收到了I/O事件返回，则
      * 返回事件数目。
      */
     /*
+     *     The timeout argument specifies the number of milliseconds that
+     *  epoll_wait() will block.  The call will block until either:
+     *     *  a file descriptor delivers an event;    
+     *     *  the call is interrupted by a signal handler; or
+     *     *  the timeout expires.
      *     When successful, epoll_wait() returns the number of file descriptors
      *  ready for the requested I/O, or zero if no file descriptor became
      *  ready during the requested timeout milliseconds.  When an error
@@ -843,8 +848,8 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
 	 *     1. 通过配置timer_resolution指令，创建一个时长为ngx_timer_resolution的定时器，等这个定时器超时了，
 	 * 就会调用ngx_timer_signal_timer()将ngx_event_timer_alarm置位，等执行到这个地方就会去更新时间了。
 	 *     2. 通过获取距离当前缓存时间最近的一个事件的超时时间与当前缓存时间的间隔，然后将这个时间间隔传递给
-	 * epoll_wait，并将flags设为NGX_UPDATE_TIME，则epoll_wait会阻塞这个时间间隔的时长，则epoll_wait返回后
-	 * 就有超时事件发生了，这个时候由于NGX_UPDATE_TIME标志，也会去更新缓存时间。
+	 * epoll_wait，并将flags设为NGX_UPDATE_TIME，epoll_wait返回后由于NGX_UPDATE_TIME标志，也会去更新缓存时间。
+	 * epoll_wait如果没有事件发生会阻塞这个时间间隔的时长。
 	 * 
      */
     if (flags & NGX_UPDATE_TIME || ngx_event_timer_alarm) {

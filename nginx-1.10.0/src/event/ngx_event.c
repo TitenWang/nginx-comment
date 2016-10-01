@@ -254,9 +254,9 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
 
     /*
      *     如果配置文件中使用了timer_resolution配置项，则对应的ngx_timer_resolution大于0，表明需要定时对缓存时间
-     * 进行更新执行更新操作的时间间隔就是ngx_timer_resolution。此时将timer参数设置为NGX_TIMER_INFINITE，并传给
-     * ngx_process_events()，在这个函数中,如果有事件发生，则获取到事件之后epoll_wait就会返回；如果这个时候一直没有
-     * 请求事件发生epoll_wait会一致阻塞NGX_TIMER_INFINITE时长。在配置了timer_resolution命令时如何更新时间呢?
+     * 进行更新执行更新操作的时间间隔就是ngx_timer_resolution。此时将timer参数设置为NGX_TIMER_INFINITE(无负载均衡)，
+     * 并传给ngx_process_events()，在这个函数中,如果有事件发生，则获取到事件之后epoll_wait就会返回；如果这个时候一直
+     * 没有请求事件发生epoll_wait会一致阻塞NGX_TIMER_INFINITE时长。在配置了timer_resolution命令时如何更新时间呢?
      *     在函数ngx_event_process_init()中如果检测到ngx_timer_resolution大于0，则会调用系统调用settimer设置一个
      * 定时器，定时时长就是ngx_timer_resolution，等定时器超时后会调用超时回调函数ngx_timer_signal_timer()，这个函数
      * 会将更新时间标志位ngx_event_timer_alarm置1，epoll_wait如果在阻塞状态此时也会返回，然后在ngx_process_events()
@@ -265,8 +265,9 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
      *     那如果配置文件中没有使用timer_resolution配置项，那么会走else分支，这个时候是怎么实现更新缓存时间的呢?
      *     实现中通过调用ngx_event_find_timer()函数，获取距离当前缓存时间最近的超时事件与当前缓存时间的间隔，即timer。
      * 并将flags设置为NGX_UPDATE_TIME,这个标志位表明需要更新缓存时间。在执行ngx_process_events()时将这两个参数传进去，
-     * 在ngx_process_events()中，epoll_wait()不管是否有就绪事件都会等待timer秒后才返回，那么这个时候肯定有超时事件了
-     * 需要更新缓存时间，那么此时由于flags为NGX_UPDATE_TIME，会调用ngx_timer_update()更新缓存时间
+     * 在ngx_process_events()中，epoll_wait()无论有没有事件发生(如果没有事件发生则会阻塞timer时长)，返回之后由于
+     * NGX_UPDATE_TIME，都会更新缓存时间，会调用ngx_timer_update()更新缓存时间。然后ngx_process_events返回后就可以
+     * 对事件进行超时检测了
      */
     if (ngx_timer_resolution) {
         timer = NGX_TIMER_INFINITE;
