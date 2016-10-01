@@ -16,8 +16,12 @@
 
 typedef struct ngx_http_upstream_rr_peer_s   ngx_http_upstream_rr_peer_t;
 
+/* 
+ * 一个后端服务器对应的配置信息(如果一个后端服务器有多个ip地址，
+ * 那么这个结构体对应的就是其中一个ip地址相关信息) 
+ */
 struct ngx_http_upstream_rr_peer_s {
-    struct sockaddr                *sockaddr;
+    struct sockaddr                *sockaddr;  // ip和port信息
     socklen_t                       socklen;
     ngx_str_t                       name;
     ngx_str_t                       server;
@@ -26,7 +30,7 @@ struct ngx_http_upstream_rr_peer_s {
     ngx_int_t                       effective_weight;
     ngx_int_t                       weight;
 
-    ngx_uint_t                      conns;
+    ngx_uint_t                      conns;  // 记录此后端服务器选中的次数
 
     ngx_uint_t                      fails;
     time_t                          accessed;
@@ -119,9 +123,12 @@ struct ngx_http_upstream_rr_peers_s {
 
 
 typedef struct {
-    ngx_http_upstream_rr_peers_t   *peers;
-    ngx_http_upstream_rr_peer_t    *current;
+    ngx_http_upstream_rr_peers_t   *peers;  // 管理后端服务器列表的对象
+    ngx_http_upstream_rr_peer_t    *current;  // 当前所指向的后端服务器对象
+
+    /* 指向后端服务器是否被选中的位图地址，如果后端服务器个数小于uintptr_t类型的位数，则指向data地址，否则按需申请 */
     uintptr_t                      *tried;
+    /* 如果后端服务器个数小于uintptr_t类型的位数，则用data来存放位图，此时tried指向data地址 */
     uintptr_t                       data;
 } ngx_http_upstream_rr_peer_data_t;
 
