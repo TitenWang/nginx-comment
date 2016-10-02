@@ -24,20 +24,20 @@ struct ngx_http_upstream_rr_peer_s {
     struct sockaddr                *sockaddr;  // ip和port信息
     socklen_t                       socklen;
     ngx_str_t                       name;
-    ngx_str_t                       server;
+    ngx_str_t                       server;  // server服务器主机名
 
-    ngx_int_t                       current_weight;
-    ngx_int_t                       effective_weight;
-    ngx_int_t                       weight;
+    ngx_int_t                       current_weight;  // 当前权重
+    ngx_int_t                       effective_weight;  // 有效权重，会根据连接结果降低或者上升
+    ngx_int_t                       weight;  // 从配置文件中获取的配置权重
 
     ngx_uint_t                      conns;  // 记录此后端服务器选中的次数
 
-    ngx_uint_t                      fails;
+    ngx_uint_t                      fails;  // 在fail_timeout时间内失败的次数
     time_t                          accessed;
-    time_t                          checked;
+    time_t                          checked;  // 标志一个fail_timeout周期开始的时间
 
-    ngx_uint_t                      max_fails;
-    time_t                          fail_timeout;
+    ngx_uint_t                      max_fails;  // 配置文件中获取
+    time_t                          fail_timeout;  // 配置文件中获取
 
     ngx_uint_t                      down;          /* unsigned  down:1; */
 
@@ -46,6 +46,7 @@ struct ngx_http_upstream_rr_peer_s {
     int                             ssl_session_len;
 #endif
 
+    /* 如果一个upstream块下有多个server配置项，则用next指针把这些server配置信息连接起来 */
     ngx_http_upstream_rr_peer_t    *next;
 
 #if (NGX_HTTP_UPSTREAM_ZONE)
@@ -57,6 +58,7 @@ struct ngx_http_upstream_rr_peer_s {
 typedef struct ngx_http_upstream_rr_peers_s  ngx_http_upstream_rr_peers_t;
 
 struct ngx_http_upstream_rr_peers_s {
+    /* 一个upstream块内所有非备份服务器的个数(以ip计数，而不是主机名，一个主机名可能有多个ip) */
     ngx_uint_t                      number;
 
 #if (NGX_HTTP_UPSTREAM_ZONE)
@@ -65,16 +67,16 @@ struct ngx_http_upstream_rr_peers_s {
     ngx_http_upstream_rr_peers_t   *zone_next;
 #endif
 
-    ngx_uint_t                      total_weight;
+    ngx_uint_t                      total_weight;  // 一个upsteam块内所有非备份服务器的总权重(以ip计数)
 
-    unsigned                        single:1;
-    unsigned                        weighted:1;
+    unsigned                        single:1;  // 一个upstream块是否只有一个后端服务器的标志位
+    unsigned                        weighted:1;  // 是否自定义了每个后端服务器的配置权重
 
-    ngx_str_t                      *name;
+    ngx_str_t                      *name;  // upstream指令后面跟的主机名
 
-    ngx_http_upstream_rr_peers_t   *next;
+    ngx_http_upstream_rr_peers_t   *next;  //管理一个upstream块中所有备份服务器组成的列表
 
-    ngx_http_upstream_rr_peer_t    *peer;
+    ngx_http_upstream_rr_peer_t    *peer;  // 存储着一个upstream块内所有非备份服务器组成的列表
 };
 
 
@@ -121,7 +123,10 @@ struct ngx_http_upstream_rr_peers_s {
 
 #endif
 
-
+/*
+ * 存储主动连接本次使用的后端服务器、后端所有服务器组成的列表，以及指示所有后端服务器是否被选中过的
+ * 位图。
+ */
 typedef struct {
     ngx_http_upstream_rr_peers_t   *peers;  // 管理后端服务器列表的对象
     ngx_http_upstream_rr_peer_t    *current;  // 当前所指向的后端服务器对象

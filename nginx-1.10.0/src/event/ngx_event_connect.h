@@ -55,9 +55,17 @@ struct ngx_peer_connection_s {
     ngx_uint_t                       tries;
     ngx_msec_t                       start_time;  // 连接开始处理的时间
 
-    /* 当用长连接与远端服务器通信时，用get和free方法获取和释放主动连接对象 */
+    /* 选择本次连接需要连接的后端服务器对象 */
     ngx_event_get_peer_pt            get;
+
+    /* 释放本次连接选择的后端服务器对象(只是对该后端服务器做一些状态记录，如本次连接是否失败、更新权重等) */
     ngx_event_free_peer_pt           free;
+
+    /*
+     * 类型为ngx_http_upstream_rr_peer_data_t，见ngx_http_upstream_init_round_robin_peer()，
+     * 这个结构体保存着本次连接所使用的后端服务器、所有的后端服务器组成的列表，以及指示所有
+     * 后端服务器是否被选中过的位图
+     */
     void                            *data;
 
 #if (NGX_SSL)

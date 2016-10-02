@@ -524,7 +524,7 @@ ngx_parse_addr(ngx_pool_t *pool, ngx_addr_t *addr, u_char *text, size_t len)
     return NGX_OK;
 }
 
-
+/* 解析url */
 ngx_int_t
 ngx_parse_url(ngx_pool_t *pool, ngx_url_t *u)
 {
@@ -538,10 +538,12 @@ ngx_parse_url(ngx_pool_t *pool, ngx_url_t *u)
         return ngx_parse_unix_domain_url(pool, u);
     }
 
+    /* 解析ipv6地址 */
     if (len && p[0] == '[') {
         return ngx_parse_inet6_url(pool, u);
     }
 
+    /* 解析ipv4地址 */
     return ngx_parse_inet_url(pool, u);
 }
 
@@ -645,10 +647,12 @@ ngx_parse_inet_url(ngx_pool_t *pool, ngx_url_t *u)
 
     last = host + u->url.len;
 
+    /* 获取指向url中port的地址 */
     port = ngx_strlchr(host, last, ':');
 
     uri = ngx_strlchr(host, last, '/');
 
+    /* 获取指向url中参数的地址 */
     args = ngx_strlchr(host, last, '?');
 
     if (args) {
@@ -657,6 +661,7 @@ ngx_parse_inet_url(ngx_pool_t *pool, ngx_url_t *u)
         }
     }
 
+    /* 转储url中的uri信息 */
     if (uri) {
         if (u->listen || !u->uri_part) {
             u->err = "invalid host";
@@ -673,6 +678,7 @@ ngx_parse_inet_url(ngx_pool_t *pool, ngx_url_t *u)
         }
     }
 
+    /* 转储url中的port信息 */
     if (port) {
         port++;
 
@@ -722,11 +728,13 @@ ngx_parse_inet_url(ngx_pool_t *pool, ngx_url_t *u)
             }
         }
 
+        /* 采用默认的端口，如80 */
         u->no_port = 1;
         u->port = u->default_port;
         sin->sin_port = htons(u->default_port);
     }
 
+    /* 计算url中host信息的长度，如果长度为0，则表示不存在host信息 */
     len = last - host;
 
     if (len == 0) {
@@ -734,17 +742,24 @@ ngx_parse_inet_url(ngx_pool_t *pool, ngx_url_t *u)
         return NGX_ERROR;
     }
 
+    /* 转储host信息 */
     u->host.len = len;
     u->host.data = host;
 
+    /* 通配符情况 */
     if (u->listen && len == 1 && *host == '*') {
         sin->sin_addr.s_addr = INADDR_ANY;
         u->wildcard = 1;
         return NGX_OK;
     }
 
+    /* 将字符串形式的ip地址转换为in_addr_t结构形式 */
     sin->sin_addr.s_addr = ngx_inet_addr(host, len);
 
+    /*
+     * 如果sin->sin_addr.s_addr的值为INADDR_NONE，说明host信息是以域名形式存在的，而不是ip地址，
+     * 那么需要进行域名解析；如果是ip地址，则直接进行填充到相应字段即可
+     */
     if (sin->sin_addr.s_addr != INADDR_NONE) {
 
         if (sin->sin_addr.s_addr == INADDR_ANY) {
@@ -765,6 +780,7 @@ ngx_parse_inet_url(ngx_pool_t *pool, ngx_url_t *u)
 
         ngx_memcpy(sin, u->sockaddr, sizeof(struct sockaddr_in));
 
+        /* 填充地址信息 */
         u->addrs[0].sockaddr = (struct sockaddr *) sin;
         u->addrs[0].socklen = sizeof(struct sockaddr_in);
 
@@ -773,6 +789,7 @@ ngx_parse_inet_url(ngx_pool_t *pool, ngx_url_t *u)
             return NGX_ERROR;
         }
 
+        /* 填充主机名信息 */
         u->addrs[0].name.len = ngx_sprintf(p, "%V:%d",
                                            &u->host, u->port) - p;
         u->addrs[0].name.data = p;
@@ -784,6 +801,7 @@ ngx_parse_inet_url(ngx_pool_t *pool, ngx_url_t *u)
         return NGX_OK;
     }
 
+    /* 进行域名解析 */
     if (ngx_inet_resolve_host(pool, u) != NGX_OK) {
         return NGX_ERROR;
     }
@@ -1091,7 +1109,7 @@ failed:
 }
 
 #else /* !NGX_HAVE_GETADDRINFO || !NGX_HAVE_INET6 */
-
+/* 域名解析 */
 ngx_int_t
 ngx_inet_resolve_host(ngx_pool_t *pool, ngx_url_t *u)
 {
@@ -1109,6 +1127,7 @@ ngx_inet_resolve_host(ngx_pool_t *pool, ngx_url_t *u)
 
     in_addr = ngx_inet_addr(u->host.data, u->host.len);
 
+    /* in_addr == INADDR_NONE表明主机信息是以域名形式存在的，而不是ip地址，所以需要进行域名解析 */
     if (in_addr == INADDR_NONE) {
         host = ngx_alloc(u->host.len + 1, pool->log);
         if (host == NULL) {
@@ -1117,6 +1136,7 @@ ngx_inet_resolve_host(ngx_pool_t *pool, ngx_url_t *u)
 
         (void) ngx_cpystrn(host, u->host.data, u->host.len + 1);
 
+        /* 通过系统调用gethostbyname获取host字符串对应的主机信息，包括主机名字和地址信息 */
         h = gethostbyname((char *) host);
 
         ngx_free(host);
@@ -1126,6 +1146,7 @@ ngx_inet_resolve_host(ngx_pool_t *pool, ngx_url_t *u)
             return NGX_ERROR;
         }
 
+        /* 计算域名形式的主机对应了ip地址的数量，有些域名存在冗余的ip地址 */
         for (i = 0; h->h_addr_list[i] != NULL; i++) { /* void */ }
 
         /* MP: ngx_shared_palloc() */
@@ -1137,6 +1158,7 @@ ngx_inet_resolve_host(ngx_pool_t *pool, ngx_url_t *u)
 
         u->naddrs = i;
 
+        /* 将通过gethostbyname()获取到的域名对应的ip地址信息进行转储到ngx_url_t的addrs和naddrs字段中 */
         for (i = 0; i < u->naddrs; i++) {
 
             sin = ngx_pcalloc(pool, sizeof(struct sockaddr_in));

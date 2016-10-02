@@ -22,7 +22,7 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
     ngx_event_t       *rev, *wev;
     ngx_connection_t  *c;
 
-    /* 当使用长连接与上游服务器通信时，用get方法从连接池中获取一个主动连接对象 */
+    /* 从本次连接对应的upstream块内选择一个合适的后端服务器 */
     rc = pc->get(pc, pc->data);
     if (rc != NGX_OK) {
         return rc;

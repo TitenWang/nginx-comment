@@ -70,6 +70,7 @@ typedef struct {
 
 typedef struct {
     ngx_hash_t                       headers_in_hash;
+    /* 存储的是http块内出现的所有upstream块的信息，一个元素对应一个upstream配置信息 */
     ngx_array_t                      upstreams;
                                              /* ngx_http_upstream_srv_conf_t */
 } ngx_http_upstream_main_conf_t;
@@ -83,22 +84,36 @@ typedef ngx_int_t (*ngx_http_upstream_init_peer_pt)(ngx_http_request_t *r,
 
 
 typedef struct {
+    /*
+     * 如果使用默认的加权轮询算法，则该函数为ngx_http_upstream_init_round_robin()，该函数
+     * 用于构造后端服务器组成的链表，并挂载到下面的data字段。该函数在解析完http块下的main
+     * 级别配置项之后调用
+     */
     ngx_http_upstream_init_pt        init_upstream;
+
+    /*
+     * 如果使用默认的加权轮询算法，则该函数为ngx_http_upstream_init_round_robin_peer()，
+     * 该函数会设置get和free方法，除此之外，也会将下面data字段挂载的后端服务器列表设置到
+     * r->upstream->peer.data上。该函数在构造发送往上游服务器的请求时调用，见函数
+     * ngx_http_upstream_init_request()
+     */
     ngx_http_upstream_init_peer_pt   init;
+
+    /* 挂载着后端服务器组成的列表，见ngx_http_upstream_init_round_robin() */
     void                            *data;
 } ngx_http_upstream_peer_t;
 
-
+/* upstream配置块中的server配置项结构体 */
 typedef struct {
-    ngx_str_t                        name;
-    ngx_addr_t                      *addrs;
-    ngx_uint_t                       naddrs;
-    ngx_uint_t                       weight;
-    ngx_uint_t                       max_fails;
-    time_t                           fail_timeout;
+    ngx_str_t                        name;  //server配置项第一个参数，即主机名
+    ngx_addr_t                      *addrs;  // ip地址组成的数组，一个域名可能对应多个ip地址
+    ngx_uint_t                       naddrs;  // ip地址的个数
+    ngx_uint_t                       weight;  // 权重
+    ngx_uint_t                       max_fails;  // 在fail_timeout时间内可以失败的最大次数
+    time_t                           fail_timeout;  // 与max_fails结合使用
 
-    unsigned                         down:1;
-    unsigned                         backup:1;
+    unsigned                         down:1;  // 指示服务器是否宕机的标志
+    unsigned                         backup:1;  // 指示服务器是否为备份服务器的标志
 } ngx_http_upstream_server_t;
 
 
@@ -109,15 +124,16 @@ typedef struct {
 #define NGX_HTTP_UPSTREAM_DOWN          0x0010
 #define NGX_HTTP_UPSTREAM_BACKUP        0x0020
 
-
+/* 代表一个upstream块的配置信息结构体 */
 struct ngx_http_upstream_srv_conf_s {
-    ngx_http_upstream_peer_t         peer;
-    void                           **srv_conf;
+    ngx_http_upstream_peer_t         peer;  // 一个upstream块内包含的后端服务器信息
+    void                           **srv_conf;  // 指向所有http模块生成的srv级别(upstream块)的配置项结构体数组
 
+    /* 这个动态数组用来存储upstream块内所有server配置项的信息，一个元素对应一个server指令 */
     ngx_array_t                     *servers;  /* ngx_http_upstream_server_t */
 
-    ngx_uint_t                       flags;
-    ngx_str_t                        host;
+    ngx_uint_t                       flags;  // upstream块内支持出现的功能参数，如backup、fail_timeout之类的
+    ngx_str_t                        host;  // upstream指令后面跟的host名字
     u_char                          *file_name;
     ngx_uint_t                       line;
     in_port_t                        port;

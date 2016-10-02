@@ -28,7 +28,8 @@ static void ngx_http_upstream_empty_save_session(ngx_peer_connection_t *pc,
 
 /*
  * 这个函数主要用于构造后端服务其列表，即把从配置文件中获取到的后端服务器的信息分类
- * 管理起来
+ * 管理起来，在解析完http块下的main级别配置项之后调用，每个upstream块都对应需要调用
+ * 这个函数
  */
 ngx_int_t
 ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
@@ -271,7 +272,11 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
     return NGX_OK;
 }
 
-
+/*
+ * 该函数会设置get和free方法，以及构造指示所有后端服务器是否被选择过的位图，除此之外，
+ * 也会将下面data字段挂载的后端服务器列表设置到r->upstream->peer.data上。该函数在构造
+ * 发送往上游服务器的请求时调用，见函数ngx_http_upstream_init_request()
+ */
 ngx_int_t
 ngx_http_upstream_init_round_robin_peer(ngx_http_request_t *r,
     ngx_http_upstream_srv_conf_t *us)
@@ -504,7 +509,9 @@ ngx_http_upstream_create_round_robin_peer(ngx_http_request_t *r,
     return NGX_OK;
 }
 
-
+/*
+ * 从连接对应的upstream块内选择一台合适的后端服务器，后续会向这个服务器发起建链请求
+ */
 ngx_int_t
 ngx_http_upstream_get_round_robin_peer(ngx_peer_connection_t *pc, void *data)
 {
@@ -623,7 +630,7 @@ failed:
     return NGX_BUSY;
 }
 
-
+/* 真正执行加权轮询算法的函数 */
 static ngx_http_upstream_rr_peer_t *
 ngx_http_upstream_get_peer(ngx_http_upstream_rr_peer_data_t *rrp)
 {
@@ -679,6 +686,8 @@ ngx_http_upstream_get_peer(ngx_http_upstream_rr_peer_data_t *rrp)
 
         /* 计算当前权重 */
         peer->current_weight += peer->effective_weight;
+
+        /* total为本次可以选择的所有后端服务器的有效权重之和 */
         total += peer->effective_weight;
 
         /* 更新有效权重，如果有效权重小于配置权重，则递增有效权重 */
@@ -711,10 +720,13 @@ ngx_http_upstream_get_peer(ngx_http_upstream_rr_peer_data_t *rrp)
     /* 将本次选中的后端服务器对应位图中的位置位，表明该服务器已经选中过了 */
     rrp->tried[n] |= m;
 
-    /* 更新本次选中的后端服务器的当前权重 */
+    /* 
+     * 更新本次选中的后端服务器的当前权重，计算方法为当前权重减去本次可以选择的所有
+     * 后端服务器权重之和作为本次选中后端服务器的当前权重。
+     */
     best->current_weight -= total;
 
-    /* 更新本次选中的后端服务器的选中时间 */
+    /* 更新一个fail_timeout周期开始的时间 */
     if (now - best->checked > best->fail_timeout) {
         best->checked = now;
     }
@@ -722,7 +734,10 @@ ngx_http_upstream_get_peer(ngx_http_upstream_rr_peer_data_t *rrp)
     return best;
 }
 
-
+/*
+ * 该函数主要用来设置本次连接选中的后端服务器的一些信息，例如，如果Nginx在向这个后端服务器
+ * 发起建链失败或者请求处理失败，则需要记录失败次数，以及重新计算权重等。
+ */
 void
 ngx_http_upstream_free_round_robin_peer(ngx_peer_connection_t *pc, void *data,
     ngx_uint_t state)

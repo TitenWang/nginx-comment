@@ -713,11 +713,11 @@ ngx_http_upstream_init_request(ngx_http_request_t *r)
         /* 获取ngx_http_upstream_module模块的配置项结构体 */
         umcf = ngx_http_get_module_main_conf(r, ngx_http_upstream_module);
 
-        /* 获取配置的所有远端服务器 */
+        /* 获取配置的所有upstream块 */
         uscfp = umcf->upstreams.elts;
 
         /*
-         * 下面会遍历配置文件中配置的所有远端服务器信息，找到此次需要建链的远端服务器信息
+         * 下面会遍历配置文件中配置的所有upstream块信息，找到此次建链的对应的upstream块信息
          */
         for (i = 0; i < umcf->upstreams.nelts; i++) {
 
@@ -788,6 +788,15 @@ found:
     u->ssl_name = uscf->host;
 #endif
 
+    /*
+     * 初始化所使用的负载均衡策略，如果采用的是默认的加权轮询round robin策略，则该函数为
+     * ngx_http_upstream_init_round_robin_peer()，该函数主要工作是设置从多台后端服务器中
+     * 选择一个合适的服务器方法、释放本次连接所使用的后端服务器方法(实际上是根据连接状态
+     * 重新计算选择的后端服务器的有效权重，以及做一些状态判断，如本台后端服务器是否不参与
+     * 下一次的选择等)。除了设置get和free方法，还有一个主要工作就是构造判断所有后端服务器
+     * 是否被选择过的位图。
+     * 每个与后端服务器建链请求的都会调用该函数初始化本次建链的负载均衡策略略
+     */
     if (uscf->peer.init(r, uscf) != NGX_OK) {
         ngx_http_upstream_finalize_request(r, u,
                                            NGX_HTTP_INTERNAL_SERVER_ERROR);
@@ -4446,6 +4455,10 @@ ngx_http_upstream_next(ngx_http_request_t *r, ngx_http_upstream_t *u,
             state = NGX_PEER_FAILED;
         }
 
+        /*
+         * 根据state设置本次连接选中的后端服务器的一些状态信息，如果使用的是默认加权轮询算法，则
+         * 该函数为ngx_http_upstream_free_round_robin_peer()
+         */
         u->peer.free(&u->peer, u->peer.data, state);
         u->peer.sockaddr = NULL;
     }
@@ -4637,7 +4650,10 @@ ngx_http_upstream_finalize_request(ngx_http_request_t *r,
     /* 调用http模块实现的finalize_request方法 */
     u->finalize_request(r, rc);
 
-    /* 如果tcp连接池实现了free方法，那么会调用该方法释放连接资源 */
+    /*
+     * 根据state(这里是0)设置本次连接选中的后端服务器的一些状态信息，如果使用的是默认加权轮询算法，则
+     * 该函数为ngx_http_upstream_free_round_robin_peer()
+     */
     if (u->peer.free && u->peer.sockaddr) {
         u->peer.free(&u->peer, u->peer.data, 0);
         u->peer.sockaddr = NULL;
@@ -5964,11 +5980,13 @@ ngx_http_upstream(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
 
     ngx_memzero(&u, sizeof(ngx_url_t));
 
+    /* upstream配置指令后面也需要指定一个host名字，是upstream指令的第一个参数 */
     value = cf->args->elts;
     u.host = value[1];
     u.no_resolve = 1;
     u.no_port = 1;
 
+    /* 获取一个用于存储upstream块信息的结构体，其挂载在ngx_http_upstream_main_conf_t中的upstreams字段 */
     uscf = ngx_http_upstream_add(cf, &u, NGX_HTTP_UPSTREAM_CREATE
                                          |NGX_HTTP_UPSTREAM_WEIGHT
                                          |NGX_HTTP_UPSTREAM_MAX_FAILS
@@ -5980,11 +5998,13 @@ ngx_http_upstream(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
     }
 
 
+    /* 创建用于管理upstream块下配置项结构体的上下文结构 */
     ctx = ngx_pcalloc(cf->pool, sizeof(ngx_http_conf_ctx_t));
     if (ctx == NULL) {
         return NGX_CONF_ERROR;
     }
 
+    /* upstream块下的http main级别的配置项结构体直接继承http块下的 */
     http_ctx = cf->ctx;
     ctx->main_conf = http_ctx->main_conf;
 
@@ -6007,6 +6027,7 @@ ngx_http_upstream(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
         return NGX_CONF_ERROR;
     }
 
+    /* 调用所有的http模块创建srv和loc级别的配置项结构体信息 */
     for (m = 0; cf->cycle->modules[m]; m++) {
         if (cf->cycle->modules[m]->type != NGX_HTTP_MODULE) {
             continue;
@@ -6033,6 +6054,7 @@ ngx_http_upstream(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
         }
     }
 
+    /* 申请用于存储upstream块内的server配置项信息的结构体 */
     uscf->servers = ngx_array_create(cf->pool, 4,
                                      sizeof(ngx_http_upstream_server_t));
     if (uscf->servers == NULL) {
@@ -6044,7 +6066,7 @@ ngx_http_upstream(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
 
     pcf = *cf;
     cf->ctx = ctx;
-    cf->cmd_type = NGX_HTTP_UPS_CONF;
+    cf->cmd_type = NGX_HTTP_UPS_CONF;  // 设置解析的配置信息类型，在upstream上下文中
 
     rv = ngx_conf_parse(cf, NULL);
 
@@ -6054,6 +6076,7 @@ ngx_http_upstream(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
         return rv;
     }
 
+    /* upstream块内必须配置server配置项，否则是错误的 */
     if (uscf->servers->nelts == 0) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "no servers are inside upstream");
@@ -6063,10 +6086,11 @@ ngx_http_upstream(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
     return rv;
 }
 
-
+/* 解析upstream配置块里面的server配置项回调 */
 static char *
 ngx_http_upstream_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
+    /* 获取upstream配置块结构体 */
     ngx_http_upstream_srv_conf_t  *uscf = conf;
 
     time_t                       fail_timeout;
@@ -6076,6 +6100,7 @@ ngx_http_upstream_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_uint_t                   i;
     ngx_http_upstream_server_t  *us;
 
+    /* 申请用于存储server配置项的结构体 */
     us = ngx_array_push(uscf->servers);
     if (us == NULL) {
         return NGX_CONF_ERROR;
@@ -6085,12 +6110,17 @@ ngx_http_upstream_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     value = cf->args->elts;
 
+    /*
+     * 如果在upstream块的server配置项中没有配置weight、max_fails和fail_timeout等选项，
+     * 则使用如下的默认值 
+     */
     weight = 1;
     max_fails = 1;
     fail_timeout = 10;
 
     for (i = 2; i < cf->args->nelts; i++) {
 
+        /* 解析weight权重参数 */
         if (ngx_strncmp(value[i].data, "weight=", 7) == 0) {
 
             if (!(uscf->flags & NGX_HTTP_UPSTREAM_WEIGHT)) {
@@ -6106,6 +6136,7 @@ ngx_http_upstream_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        /* 解析max_fails参数 */
         if (ngx_strncmp(value[i].data, "max_fails=", 10) == 0) {
 
             if (!(uscf->flags & NGX_HTTP_UPSTREAM_MAX_FAILS)) {
@@ -6121,6 +6152,7 @@ ngx_http_upstream_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        /* 解析fail_timeout参数 */
         if (ngx_strncmp(value[i].data, "fail_timeout=", 13) == 0) {
 
             if (!(uscf->flags & NGX_HTTP_UPSTREAM_FAIL_TIMEOUT)) {
@@ -6139,6 +6171,7 @@ ngx_http_upstream_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        /* 解析是否配置了backup标志位 */
         if (ngx_strcmp(value[i].data, "backup") == 0) {
 
             if (!(uscf->flags & NGX_HTTP_UPSTREAM_BACKUP)) {
@@ -6150,6 +6183,7 @@ ngx_http_upstream_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        /* 检测是否配置了down标志位 */
         if (ngx_strcmp(value[i].data, "down") == 0) {
 
             if (!(uscf->flags & NGX_HTTP_UPSTREAM_DOWN)) {
@@ -6164,11 +6198,16 @@ ngx_http_upstream_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         goto invalid;
     }
 
+    /*
+     * server配置项的第一个参数一般都是后端服务器的url，可能是域名，也可能是ip地址，
+     * 需要注意的是域名可能对应多个ip地址
+     */
     ngx_memzero(&u, sizeof(ngx_url_t));
 
     u.url = value[1];
     u.default_port = 80;
 
+    /* 解析url，将域名解析成对应的ip地址 */
     if (ngx_parse_url(cf->pool, &u) != NGX_OK) {
         if (u.err) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
@@ -6178,6 +6217,7 @@ ngx_http_upstream_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    /* 将解析得到的url信息转储在 */
     us->name = u.url;
     us->addrs = u.addrs;
     us->naddrs = u.naddrs;
@@ -6203,7 +6243,7 @@ not_supported:
     return NGX_CONF_ERROR;
 }
 
-
+/* 获取用来存储一个upstream块配置信息的结构体 */
 ngx_http_upstream_srv_conf_t *
 ngx_http_upstream_add(ngx_conf_t *cf, ngx_url_t *u, ngx_uint_t flags)
 {
@@ -6224,12 +6264,19 @@ ngx_http_upstream_add(ngx_conf_t *cf, ngx_url_t *u, ngx_uint_t flags)
         }
     }
 
+    /* ngx_http_upstream_module的http块下的main级别配置项结构体 */
     umcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_upstream_module);
 
     uscfp = umcf->upstreams.elts;
 
+    /*
+     * 遍历已经解析到的upstream块，判断本次解析到的upstream是否有之前就已经解析过一样的upstream块了，
+     * 如果存在满足条件的upstream块，则直接返回已存在的upstream信息结构体就不要重新创建了，如果没有，
+     * 则需要重新创建。
+     */
     for (i = 0; i < umcf->upstreams.nelts; i++) {
 
+        /* upstream指令后面带的参数不一样，不重复 */
         if (uscfp[i]->host.len != u->host.len
             || ngx_strncasecmp(uscfp[i]->host.data, u->host.data, u->host.len)
                != 0)
@@ -6237,6 +6284,10 @@ ngx_http_upstream_add(ngx_conf_t *cf, ngx_url_t *u, ngx_uint_t flags)
             continue;
         }
 
+        /*
+         * 如果本次需要解析的upstream块创建时带有NGX_HTTP_UPSTREAM_CREATE，并且之前已经解析到的
+         * upstream块在创建时也带有NGX_HTTP_UPSTREAM_CREATE，则重复了，配置文件配置出现错误。
+         */
         if ((flags & NGX_HTTP_UPSTREAM_CREATE)
              && (uscfp[i]->flags & NGX_HTTP_UPSTREAM_CREATE))
         {
@@ -6260,18 +6311,21 @@ ngx_http_upstream_add(ngx_conf_t *cf, ngx_url_t *u, ngx_uint_t flags)
             return NULL;
         }
 
+        /* 如果端口不一样，则不重复 */
         if (uscfp[i]->port && u->port
             && uscfp[i]->port != u->port)
         {
             continue;
         }
 
+        /* 如果默认端口不一样，则不重复 */
         if (uscfp[i]->default_port && u->default_port
             && uscfp[i]->default_port != u->default_port)
         {
             continue;
         }
 
+        /* 将原有已经存在的upstream块功能参数修改为新传入的flags */
         if (flags & NGX_HTTP_UPSTREAM_CREATE) {
             uscfp[i]->flags = flags;
         }
@@ -6279,11 +6333,13 @@ ngx_http_upstream_add(ngx_conf_t *cf, ngx_url_t *u, ngx_uint_t flags)
         return uscfp[i];
     }
 
+    /* 申请用于存储一个upstream块内配置信息的结构体 */
     uscf = ngx_pcalloc(cf->pool, sizeof(ngx_http_upstream_srv_conf_t));
     if (uscf == NULL) {
         return NULL;
     }
 
+    /* upstream块内支持出现的功能标志位，如backup、down之类的 */
     uscf->flags = flags;
     uscf->host = u->host;
     uscf->file_name = cf->conf_file->file.name.data;
@@ -6310,6 +6366,7 @@ ngx_http_upstream_add(ngx_conf_t *cf, ngx_url_t *u, ngx_uint_t flags)
         us->naddrs = 1;
     }
 
+    /* 从umcf->upstreams申请一个元素用来存储当前解析到的这个upstream块信息 */
     uscfp = ngx_array_push(&umcf->upstreams);
     if (uscfp == NULL) {
         return NULL;
@@ -6620,7 +6677,7 @@ ngx_http_upstream_create_main_conf(ngx_conf_t *cf)
     return umcf;
 }
 
-
+/* 解析完http下面的所有upstream配置块之后会调用 */
 static char *
 ngx_http_upstream_init_main_conf(ngx_conf_t *cf, void *conf)
 {
@@ -6634,13 +6691,19 @@ ngx_http_upstream_init_main_conf(ngx_conf_t *cf, void *conf)
     ngx_http_upstream_header_t     *header;
     ngx_http_upstream_srv_conf_t  **uscfp;
 
+    /* 遍历http块下所有的upstream配置块 */
     uscfp = umcf->upstreams.elts;
-
     for (i = 0; i < umcf->upstreams.nelts; i++) {
 
+        /* 判断是否初始化了init_upstream回调方法，如果没有，则使用默认的负载均衡策略初始化方法 */
         init = uscfp[i]->peer.init_upstream ? uscfp[i]->peer.init_upstream:
                                             ngx_http_upstream_init_round_robin;
 
+        /*
+         * 初始化负载均衡策略
+         * 如果采用的是默认的round robin加权轮询策略，则该初始化方法主要的工作就是构造
+         * 由配置文件中的后端服务器组成的后端服务器列表，并用专门的对象管理起来
+         */
         if (init(cf, uscfp[i]) != NGX_OK) {
             return NGX_CONF_ERROR;
         }
@@ -6649,6 +6712,7 @@ ngx_http_upstream_init_main_conf(ngx_conf_t *cf, void *conf)
 
     /* upstream_headers_in_hash */
 
+    /* 将upstream机制支持的头部信息进行hash，加快后续的查找速度 */
     if (ngx_array_init(&headers_in, cf->temp_pool, 32, sizeof(ngx_hash_key_t))
         != NGX_OK)
     {
