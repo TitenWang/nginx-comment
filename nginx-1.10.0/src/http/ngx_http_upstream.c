@@ -674,6 +674,12 @@ ngx_http_upstream_init_request(ngx_http_request_t *r)
     /* 解析主机域名 */
     if (u->resolved == NULL) {
 
+        /*
+         * 如果u->resolved为NULL，则会使用u->conf->upstream中的upstream块。ngx_http_memcached_module
+         * 就会使用这种方式，在ngx_http_memcached_pass函数中，会将在解析配置文件获取到的upstream块
+         * 设置给mlcf->upstream.upstream，然后在ngx_http_memcached_handler函数中会将mlcf->upstream
+         * 设置给u->conf，所以这里使用的就是memcached_pass中获取到的upstream块信息
+         */
         uscf = u->conf->upstream;
 
     } else {
@@ -6252,6 +6258,13 @@ ngx_http_upstream_add(ngx_conf_t *cf, ngx_url_t *u, ngx_uint_t flags)
     ngx_http_upstream_srv_conf_t   *uscf, **uscfp;
     ngx_http_upstream_main_conf_t  *umcf;
 
+    /*
+     * 如果flags参数中没有包含NGX_HTTP_UPSTREAM_CREATE位，则说明这不是要新建一个upstream配置块，
+     * 而是需要用ngx_url_t类型的参数在已经建立好的upstream块中选择一个。如果在配置文件中解析一个
+     * upstream块时，一般都会带有NGX_HTTP_UPSTREAM_CREATE位，这个时候需要新建一个upstream配置块。
+     * 而如果是像解析memcached_pass或者proxy_pass命令的时候一般会以flags等于来调用该函数，这个
+     * 时候会从已经解析好的upstream配置块中选择一个和这些命令能匹配上的upstream配置块。
+     */
     if (!(flags & NGX_HTTP_UPSTREAM_CREATE)) {
 
         if (ngx_parse_url(cf->pool, u) != NGX_OK) {
@@ -6270,9 +6283,15 @@ ngx_http_upstream_add(ngx_conf_t *cf, ngx_url_t *u, ngx_uint_t flags)
     uscfp = umcf->upstreams.elts;
 
     /*
-     * 遍历已经解析到的upstream块，判断本次解析到的upstream是否有之前就已经解析过一样的upstream块了，
-     * 如果存在满足条件的upstream块，则直接返回已存在的upstream信息结构体就不要重新创建了，如果没有，
-     * 则需要重新创建。
+     * 遍历已经解析到的upstream配置块，为什么需要这样做呢?我们知道，当我们需要使用upstream机制
+     * 访问后端服务器的时候，一般会配置一个upstream块，然后在upstream块里面配置一个或多个后端
+     * 服务器，配置好upstream块之后，又会用memcached_pass或者proxy_pass等命令去索引upstream
+     * 配置块。一般来说在解析memcached_pass命令的时候会调用该函数去获取一个匹配的upstream配置块。
+     * 这也是这个循环的一个目的。
+     * 考虑下这种情况，如果是先解析到memcached_pass或者proxy_pass命令，那么也会先创建一个upstream
+     * 配置块，然后后续在解析到upstream块的时候，也会直接返回主机名匹配的的upstream配置块，然后
+     * 继续做一些初始化。因为如果先解析到memcached_pass或者proxy_pass命令时创建的upstream配置块
+     * 基本没有做什么初始化。
      */
     for (i = 0; i < umcf->upstreams.nelts; i++) {
 
@@ -6677,7 +6696,7 @@ ngx_http_upstream_create_main_conf(ngx_conf_t *cf)
     return umcf;
 }
 
-/* 解析完http下面的所有upstream配置块之后会调用 */
+/* 解析完http下面的所有main级别配置块之后会调用，其实也就是配置文件解析完之后调用 */
 static char *
 ngx_http_upstream_init_main_conf(ngx_conf_t *cf, void *conf)
 {

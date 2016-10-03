@@ -221,7 +221,7 @@ ngx_http_memcached_handler(ngx_http_request_t *r)
 
     mlcf = ngx_http_get_module_loc_conf(r, ngx_http_memcached_module);
 
-    /* 从ngx_http_memcached_module模块的配置信息中获取upstream机制的配置信息 */
+    /* 从ngx_http_memcached_module模块的配置信息中获取upstream机制的配置信息，并设置到upstream对象的conf中 */
     u->conf = &mlcf->upstream;
 
     /* 设置upstream机制会使用到的几个重要的回调函数 */
@@ -879,7 +879,11 @@ ngx_http_memcached_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     u.url = value[1];
     u.no_resolve = 1;  // url没有进行dns解析的标志位
 
-    /* 获取一个存储upstream配置块信息的结构体 */
+    /*
+     * 获取一个存储upstream配置块信息的结构体，这个时候一般不会创建一个新的upstream配置块，
+     * 而是从已有的upstream配置块中找出和memcached_pass命令参数匹配的那个upstream配置块，后续
+     * 需要使用到这个upstream配置块中的信息，比如用于做负载均衡之类的。proxy_pass命令也是类似
+     */
     mlcf->upstream.upstream = ngx_http_upstream_add(cf, &u, 0);
     if (mlcf->upstream.upstream == NULL) {
         return NGX_CONF_ERROR;
