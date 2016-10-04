@@ -384,6 +384,7 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
         u->peer.tries = pscf->next_upstream_tries;
     }
 
+    /* 转储ngx_stream_proxy_module模块srv级别的proxy_protocol指令标志 */
     u->proxy_protocol = pscf->proxy_protocol;
     u->start_sec = ngx_time();
 
@@ -404,12 +405,16 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
         return;
     }
 
-    /* 有缓冲区对象u->downstream_buf来管理这个内存 */
+    /*
+     * 用缓冲区对象u->downstream_buf来管理这个内存，这个内存是用来存放客户端发给nginx的数据，
+     * nginx会从这里获取数据然后发送给后端服务器。
+     */
     u->downstream_buf.start = p;
     u->downstream_buf.end = p + pscf->buffer_size;
     u->downstream_buf.pos = p;
     u->downstream_buf.last = p;
 
+    /* 如果配置文件中配置了proxy_protocol指令，则u->proxy_protocol为1 */
     if (u->proxy_protocol
 #if (NGX_STREAM_SSL)
         && pscf->ssl == NULL
@@ -421,6 +426,7 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
         ngx_log_debug0(NGX_LOG_DEBUG_STREAM, c->log, 0,
                        "stream proxy send PROXY protocol header");
 
+        /* 往u->downstream_buf管理的内存写入proxy_protocol协议信息 */
         p = ngx_proxy_protocol_write(c, u->downstream_buf.last,
                                      u->downstream_buf.end);
         if (p == NULL) {
@@ -429,7 +435,7 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
         }
 
         u->downstream_buf.last = p;
-        u->proxy_protocol = 0;
+        u->proxy_protocol = 0;  // proxy_protocol协议头发送一个就可以了，这里将标志位清零
     }
 
     /* 如果客户端与nginx之间连接的读事件就绪了，就把读事件加入到ngx_posted_events，延后执行 */
@@ -550,12 +556,14 @@ ngx_stream_proxy_init_upstream(ngx_stream_session_t *s)
         pc->tcp_nodelay = NGX_TCP_NODELAY_SET;
     }
 
+    /* u->proxy_protocol为1表示配置文件中配置了proxy_protocol命令 */
     if (u->proxy_protocol) {
+        /* 向后端服务器发送proxy_protocol协议的头部信息 */
         if (ngx_stream_proxy_send_proxy_protocol(s) != NGX_OK) {
             return;
         }
 
-        u->proxy_protocol = 0;
+        u->proxy_protocol = 0;  // proxy_protocol协议头发送一次就可以了，这里将标志位清零
     }
 
     pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
@@ -591,7 +599,9 @@ ngx_stream_proxy_init_upstream(ngx_stream_session_t *s)
 
     c->log->action = "proxying connection";
 
-    /* 申请内存，然后用缓冲区对象u->upstream_buf进行管理 */
+    /* 申请内存，然后用缓冲区对象u->upstream_buf进行管理
+     * u->upstream_buf存储后端服务器发给nginx的响应，nginx会从这里获取数据然后发送给客户端 
+     */
     if (u->upstream_buf.start == NULL) {
         p = ngx_pnalloc(c->pool, pscf->buffer_size);
         if (p == NULL) {
@@ -634,7 +644,7 @@ ngx_stream_proxy_init_upstream(ngx_stream_session_t *s)
     ngx_stream_proxy_process(s, 0, 1);
 }
 
-
+/* 向后端服务器发送proxy_protocol协议的头部信息 */
 static ngx_int_t
 ngx_stream_proxy_send_proxy_protocol(ngx_stream_session_t *s)
 {
@@ -650,6 +660,7 @@ ngx_stream_proxy_send_proxy_protocol(ngx_stream_session_t *s)
     ngx_log_debug0(NGX_LOG_DEBUG_STREAM, c->log, 0,
                    "stream proxy send PROXY protocol header");
 
+    /* 往buf里面写入proxy_protocol协议的信息 */
     p = ngx_proxy_protocol_write(c, buf, buf + NGX_PROXY_PROTOCOL_MAX_HEADER);
     if (p == NULL) {
         ngx_stream_proxy_finalize(s, NGX_ERROR);
@@ -658,10 +669,12 @@ ngx_stream_proxy_send_proxy_protocol(ngx_stream_session_t *s)
 
     u = s->upstream;
 
+    /* 获取nginx与后端服务器之间的连接 */
     pc = u->peer.connection;
 
     size = p - buf;
 
+    /* 往后端服务器发送proxy_protocol协议的信息 */
     n = pc->send(pc, buf, size);
 
     if (n == NGX_AGAIN) {
@@ -674,6 +687,10 @@ ngx_stream_proxy_send_proxy_protocol(ngx_stream_session_t *s)
 
         ngx_add_timer(pc->write, pscf->timeout);
 
+        /*
+         * 将nginx与后台服务器连接写事件回调函数设置为ngx_stream_proxy_connect_handler()
+         * 后续在这个函数中会再次调用ngx_stream_proxy_init_upstream初始化upstream。
+         */
         pc->write->handler = ngx_stream_proxy_connect_handler;
 
         return NGX_AGAIN;

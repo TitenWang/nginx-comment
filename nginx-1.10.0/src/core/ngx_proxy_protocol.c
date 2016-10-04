@@ -90,7 +90,7 @@ invalid:
     return NULL;
 }
 
-
+/* 往buf里面写入proxy_protocol协议的信息 */
 u_char *
 ngx_proxy_protocol_write(ngx_connection_t *c, u_char *buf, u_char *last)
 {
@@ -100,6 +100,7 @@ ngx_proxy_protocol_write(ngx_connection_t *c, u_char *buf, u_char *last)
         return NULL;
     }
 
+    /* 获取和客户端建链的本机ip地址 */
     if (ngx_connection_local_sockaddr(c, NULL, 0) != NGX_OK) {
         return NULL;
     }
@@ -107,8 +108,10 @@ ngx_proxy_protocol_write(ngx_connection_t *c, u_char *buf, u_char *last)
     switch (c->sockaddr->sa_family) {
 
     case AF_INET:
+        /* 往buf里面写入"PROXY TCP4" */
         buf = ngx_cpymem(buf, "PROXY TCP4 ", sizeof("PROXY TCP4 ") - 1);
 
+        /* 获取建链的客户端和本机的端口 */
         port = ntohs(((struct sockaddr_in *) c->sockaddr)->sin_port);
         lport = ntohs(((struct sockaddr_in *) c->local_sockaddr)->sin_port);
 
@@ -129,12 +132,14 @@ ngx_proxy_protocol_write(ngx_connection_t *c, u_char *buf, u_char *last)
                           sizeof("PROXY UNKNOWN" CRLF) - 1);
     }
 
+    /* 往buf里面写入客户端的ip:port */
     buf += ngx_sock_ntop(c->sockaddr, c->socklen, buf, last - buf, 0);
 
     *buf++ = ' ';
 
+    /* 往buf里面写入nginx本机的ip:port */
     buf += ngx_sock_ntop(c->local_sockaddr, c->local_socklen, buf, last - buf,
                          0);
-
+    /* 写入客户端和本机的端口 */
     return ngx_slprintf(buf, last, " %ui %ui" CRLF, port, lport);
 }
