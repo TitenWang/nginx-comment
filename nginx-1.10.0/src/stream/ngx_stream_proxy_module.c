@@ -42,6 +42,7 @@ typedef struct {
     ngx_ssl_t                       *ssl;
 #endif
 
+    /* 与本次proxy流程相关upstream对象，也就是proxy_pass指定的upstream */
     ngx_stream_upstream_srv_conf_t  *upstream;
 } ngx_stream_proxy_srv_conf_t;
 
@@ -340,11 +341,13 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
 
     c = s->connection;
 
+    /* 获取ngx_stream_proxy_module模块srv级别的配置项 */
     pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
 
     ngx_log_debug0(NGX_LOG_DEBUG_STREAM, c->log, 0,
                    "proxy connection handler");
 
+    /* 创建upstream对象 */
     u = ngx_pcalloc(c->pool, sizeof(ngx_stream_upstream_t));
     if (u == NULL) {
         ngx_stream_proxy_finalize(s, NGX_ERROR);
@@ -358,11 +361,16 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
     u->peer.log = c->log;
     u->peer.log_error = NGX_ERROR_ERR;
 
+    /* 用于与后端服务器建链的本机地址信息 */
     u->peer.local = pscf->local;
+
+    /* 设置连接类型，与客户端和nginx之间的连接类型一样 */
     u->peer.type = c->type;
 
+    /* pscf->upstream在解析proxy_pass命令时创建 */
     uscf = pscf->upstream;
 
+    /* 调用初始化负载均衡的函数 */
     if (uscf->peer.init(s, uscf) != NGX_OK) {
         ngx_stream_proxy_finalize(s, NGX_ERROR);
         return;
@@ -379,20 +387,24 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
     u->proxy_protocol = pscf->proxy_protocol;
     u->start_sec = ngx_time();
 
+    /* 设置客户端与nginx连接之间的读写事件回调函数 */
     c->write->handler = ngx_stream_proxy_downstream_handler;
     c->read->handler = ngx_stream_proxy_downstream_handler;
 
+    /* 如果客户端与nginx之间是udp连接，则直接调用ngx_stream_proxy_connect去连接后端服务器 */
     if (c->type == SOCK_DGRAM) {
         ngx_stream_proxy_connect(s);
         return;
     }
 
+    /* 申请大小为buffer_size的内存 */
     p = ngx_pnalloc(c->pool, pscf->buffer_size);
     if (p == NULL) {
         ngx_stream_proxy_finalize(s, NGX_ERROR);
         return;
     }
 
+    /* 有缓冲区对象u->downstream_buf来管理这个内存 */
     u->downstream_buf.start = p;
     u->downstream_buf.end = p + pscf->buffer_size;
     u->downstream_buf.pos = p;
@@ -420,14 +432,16 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
         u->proxy_protocol = 0;
     }
 
+    /* 如果客户端与nginx之间连接的读事件就绪了，就把读事件加入到ngx_posted_events，延后执行 */
     if (c->read->ready) {
         ngx_post_event(c->read, &ngx_posted_events);
     }
 
+    /* 与后端服务器建立连接 */
     ngx_stream_proxy_connect(s);
 }
 
-
+/* 与后端服务器建立连接 */
 static void
 ngx_stream_proxy_connect(ngx_stream_session_t *s)
 {
@@ -436,12 +450,14 @@ ngx_stream_proxy_connect(ngx_stream_session_t *s)
     ngx_stream_upstream_t        *u;
     ngx_stream_proxy_srv_conf_t  *pscf;
 
+    /* 这里的连接对象是指客户端与nginx之间的连接 */
     c = s->connection;
 
     c->log->action = "connecting to upstream";
 
     u = s->upstream;
 
+    /* 调用socket、connect与后端服务器建立连接 */
     rc = ngx_event_connect_peer(&u->peer);
 
     ngx_log_debug1(NGX_LOG_DEBUG_STREAM, c->log, 0, "proxy connect: %i", rc);
@@ -451,12 +467,14 @@ ngx_stream_proxy_connect(ngx_stream_session_t *s)
         return;
     }
 
+    /* 如果返回NGX_BUSY，表示暂时没有合适的后端服务器 */
     if (rc == NGX_BUSY) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "no live upstreams");
         ngx_stream_proxy_finalize(s, NGX_DECLINED);
         return;
     }
 
+    /* 如果返回NGX_DECLINED，则选择下一个后端服务器 */
     if (rc == NGX_DECLINED) {
         ngx_stream_proxy_next_upstream(s);
         return;
@@ -464,8 +482,10 @@ ngx_stream_proxy_connect(ngx_stream_session_t *s)
 
     /* rc == NGX_OK || rc == NGX_AGAIN || rc == NGX_DONE */
 
+    /* pc指的是nginx与后端服务器之间的连接对象 */
     pc = u->peer.connection;
 
+    /* 连接对象的data字段设置为ngx_stream_session_t对象 */
     pc->data = s;
     pc->log = c->log;
     pc->pool = c->pool;
@@ -477,9 +497,16 @@ ngx_stream_proxy_connect(ngx_stream_session_t *s)
         return;
     }
 
+    /*
+     * ngx_event_connect_peer()函数返回NGX_AGAIN，表示nginx与后端服务器暂时没有建链成功，
+     * 等后端服务器accept之后连接的可写事件就会就绪。
+     */
+
+    /* 设置nginx与后端服务器连接的读写事件回调函数 */
     pc->read->handler = ngx_stream_proxy_connect_handler;
     pc->write->handler = ngx_stream_proxy_connect_handler;
 
+    /* 将写事件加入到定时器中，因为nginx与后端服务器建立连接也是有时间限制的 */
     pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
 
     ngx_add_timer(pc->write, pscf->connect_timeout);
@@ -502,6 +529,7 @@ ngx_stream_proxy_init_upstream(ngx_stream_session_t *s)
 
     cscf = ngx_stream_get_module_srv_conf(s, ngx_stream_core_module);
 
+    /* 如果nginx与后端服务器之间是tcp连接，则需要设置TCP_NODELAY选项 */
     if (pc->type == SOCK_STREAM
         && cscf->tcp_nodelay
         && pc->tcp_nodelay == NGX_TCP_NODELAY_UNSET)
@@ -563,6 +591,7 @@ ngx_stream_proxy_init_upstream(ngx_stream_session_t *s)
 
     c->log->action = "proxying connection";
 
+    /* 申请内存，然后用缓冲区对象u->upstream_buf进行管理 */
     if (u->upstream_buf.start == NULL) {
         p = ngx_pnalloc(c->pool, pscf->buffer_size);
         if (p == NULL) {
@@ -576,6 +605,7 @@ ngx_stream_proxy_init_upstream(ngx_stream_session_t *s)
         u->upstream_buf.last = p;
     }
 
+    /* 如果客户端与nginx之间的连接是udp连接 */
     if (c->type == SOCK_DGRAM) {
         s->received = c->buffer->last - c->buffer->pos;
         u->downstream_buf = *c->buffer;
@@ -586,11 +616,17 @@ ngx_stream_proxy_init_upstream(ngx_stream_session_t *s)
         }
     }
 
+    /* 将connectd置位，表示nginx与上游服务器建链成功 */
     u->connected = 1;
 
+    /* 设置nginx与后端服务器之间的连接对应的读写事件回调函数 */
     pc->read->handler = ngx_stream_proxy_upstream_handler;
     pc->write->handler = ngx_stream_proxy_upstream_handler;
 
+    /*
+     * 如果设置nginx与后端服务器之间连接读事件就绪了，也就是接受到了后端服务器发来的数据，那么
+     * 先将其加入到队列ngx_posted_events，后续会进行处理。
+     */
     if (pc->read->ready || pc->read->eof) {
         ngx_post_event(pc->read, &ngx_posted_events);
     }
@@ -898,17 +934,27 @@ done:
 
 #endif
 
-
+/* nginx与客户端之间的连接对应的读写事件回调函数 */
 static void
 ngx_stream_proxy_downstream_handler(ngx_event_t *ev)
 {
+    /*
+     * nginx与客户端之间的连接写事件发生的时候，ev->write为1，
+     * 这个时候nginx需要从上游服务器读取数据然后发送给客户端。
+     * 如果是读事件发生，则ev->write为0
+     */
     ngx_stream_proxy_process_connection(ev, ev->write);
 }
 
-
+/* nginx与后端服务器之间的连接对应的读写事件回调函数 */
 static void
 ngx_stream_proxy_upstream_handler(ngx_event_t *ev)
 {
+    /*
+     * nginx与后端服务器之间连接写事件发生的时候，ev->write为1，
+     * 这个时候nginx需要从客户端读取数据，然后发送给上游服务器。
+     * 如果是读事件发生，那么ev->write为0
+     */
     ngx_stream_proxy_process_connection(ev, !ev->write);
 }
 
@@ -925,17 +971,23 @@ ngx_stream_proxy_process_connection(ngx_event_t *ev, ngx_uint_t from_upstream)
     s = c->data;
     u = s->upstream;
 
+    /* c是nginx与客户端之间的连接，pc是nginx与后端服务器之间的连接 */
     c = s->connection;
     pc = u->peer.connection;
 
     pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
 
+    /*
+     * ev->timedout为1表示超时了，这个时候需要进一步判断是不是限速引起的超时，如果是限速
+     * 引起的超时，那么不应该结束请求，而应该将事件加入到epoll中，继续调度
+     */
     if (ev->timedout) {
         ev->timedout = 0;
 
-        if (ev->delayed) {
+        if (ev->delayed) {  // ev->delayed为1表明是限速引起的超时
             ev->delayed = 0;
 
+            /* 如果事件还没有就绪，那么就将事件加入到epoll中 */
             if (!ev->ready) {
                 if (ngx_handle_read_event(ev, 0) != NGX_OK) {
                     ngx_stream_proxy_finalize(s, NGX_ERROR);
@@ -971,6 +1023,7 @@ ngx_stream_proxy_process_connection(ngx_event_t *ev, ngx_uint_t from_upstream)
                 }
             }
 
+            /* 如果是tcp连接超时，那么就需要结束请求 */
             ngx_connection_error(c, NGX_ETIMEDOUT, "connection timed out");
             ngx_stream_proxy_finalize(s, NGX_DECLINED);
             return;
@@ -978,6 +1031,7 @@ ngx_stream_proxy_process_connection(ngx_event_t *ev, ngx_uint_t from_upstream)
 
     } else if (ev->delayed) {
 
+        /* 如果事件没有超时，但是需要延迟处理，则把事件加入到epoll中。 */
         ngx_log_debug0(NGX_LOG_DEBUG_STREAM, c->log, 0,
                        "stream connection delayed");
 
@@ -995,7 +1049,12 @@ ngx_stream_proxy_process_connection(ngx_event_t *ev, ngx_uint_t from_upstream)
     ngx_stream_proxy_process(s, from_upstream, ev->write);
 }
 
-
+/*
+ * 如果nginx与后端服务器暂时没有建链成功，也就是nginx调用了connect，但是后端服务器还没有accpet，
+ * 所以nginx暂时还不能通过fd与后端服务器进行通信，这个时候就会把这个函数设置为nginx与后端服务器
+ * 连接的读写事件回调函数，等后续后端服务器accpet接受了连接后，连接的写事件就会就绪。如果nginx
+ * 最后与这台后端服务器因为超时没能成功建链，则nginx会尝试与下一台后端服务器建链。
+ */
 static void
 ngx_stream_proxy_connect_handler(ngx_event_t *ev)
 {
@@ -1005,22 +1064,26 @@ ngx_stream_proxy_connect_handler(ngx_event_t *ev)
     c = ev->data;
     s = c->data;
 
+    /* ev->timeout为1表示nginx与本台后端服务器建链超时了，这个时候nginx会尝试与下一台后端服务器建链 */
     if (ev->timedout) {
         ngx_log_error(NGX_LOG_ERR, c->log, NGX_ETIMEDOUT, "upstream timed out");
         ngx_stream_proxy_next_upstream(s);
         return;
     }
 
+    /* 成功建链，删除定时器 */
     ngx_del_timer(c->write);
 
     ngx_log_debug0(NGX_LOG_DEBUG_STREAM, c->log, 0,
                    "stream proxy connect upstream");
 
+    /* 测试建链 */
     if (ngx_stream_proxy_test_connect(c) != NGX_OK) {
         ngx_stream_proxy_next_upstream(s);
         return;
     }
 
+    /* 程序到这里表示nginx与上游服务器已经成功建链了，接下来就需要初始化upstream了 */
     ngx_stream_proxy_init_upstream(s);
 }
 
@@ -1086,6 +1149,7 @@ ngx_stream_proxy_process(ngx_stream_session_t *s, ngx_uint_t from_upstream,
 
     u = s->upstream;
 
+    /* 获取nginx与客户端以及nginx与后端服务器之间的连接对象 */
     c = s->connection;
     pc = u->connected ? u->peer.connection : NULL;
 
@@ -1104,31 +1168,40 @@ ngx_stream_proxy_process(ngx_stream_session_t *s, ngx_uint_t from_upstream,
         return;
     }
 
+    /* 获取ngx_stream_proxy_module模块在当前server块内的配置项结构体 */
     pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
 
+    /*
+     * from_upstream为1，表示需要处理nginx与后端服务器之间的连接请求事件，即从后端服务器
+     * 读取内容，然后发送给客户端。from_upstream为0的话，则是客户端读取数据，然后发送给
+     * 后端服务器。
+     */
     if (from_upstream) {
         src = pc;
         dst = c;
         b = &u->upstream_buf;
-        limit_rate = pscf->download_rate;
-        received = &u->received;
+        limit_rate = pscf->download_rate;  // 往客户端发送数据的最大速率
+        received = &u->received;  // 用于记录已接收的来自后端服务器的数据长度
 
     } else {
         src = c;
         dst = pc;
         b = &u->downstream_buf;
-        limit_rate = pscf->upload_rate;
-        received = &s->received;
+        limit_rate = pscf->upload_rate;  // 往后端服务器发送数据的最大速率
+        received = &s->received;  // 用于记录已接收的来自客户端的数据长度
     }
 
     for ( ;; ) {
 
         if (do_write) {
 
+            /* 计算last和pos之间待发送的字节数 */
             size = b->last - b->pos;
 
+            /* 如果写事件就绪了，就调用send发送数据 */
             if (size && dst && dst->write->ready) {
 
+                /* 调用send向目标连接发送数据 */
                 n = dst->send(dst, b->pos, size);
 
                 if (n == NGX_AGAIN && dst->shared) {
@@ -1136,6 +1209,7 @@ ngx_stream_proxy_process(ngx_stream_session_t *s, ngx_uint_t from_upstream,
                     n = NGX_ERROR;
                 }
 
+                /* 发送出错，结束请求 */
                 if (n == NGX_ERROR) {
                     if (c->type == SOCK_DGRAM && !from_upstream) {
                         ngx_stream_proxy_next_upstream(s);
@@ -1146,9 +1220,14 @@ ngx_stream_proxy_process(ngx_stream_session_t *s, ngx_uint_t from_upstream,
                     return;
                 }
 
+                /* n > 0表示成功发送了n字节的数据 */
                 if (n > 0) {
-                    b->pos += n;
+                    b->pos += n;  // pos指针后移n个字节
 
+                    /*
+                     * 如果b->pos == b->last表明所有待发送的数据都发送完了，于是清空缓冲区。
+                     * 为后续处理留出空间
+                     */
                     if (b->pos == b->last) {
                         b->pos = b->start;
                         b->last = b->start;
@@ -1157,32 +1236,49 @@ ngx_stream_proxy_process(ngx_stream_session_t *s, ngx_uint_t from_upstream,
             }
         }
 
+        /* 计算缓冲区中剩余可用的空间 */
         size = b->end - b->last;
 
+        /*
+         * 如果缓冲区中还有剩余空间，并且读事件已经就绪，且不需要延迟处理，
+         * 那么就进行读事件处理。
+         */
         if (size && src->read->ready && !src->read->delayed) {
 
+            /* 计算是否需要进行限速，如果需要限速，则调用recv接收数据 */
             if (limit_rate) {
+                /*
+                 * 先计算从开始处理请求到现在理论上可以接收的字节数，然后与实际接收的字节数
+                 * 求差值，如果差值小于0，表示实际接收的数据多了，需要限速。
+                 */
                 limit = (off_t) limit_rate * (ngx_time() - u->start_sec + 1)
                         - *received;
 
                 if (limit <= 0) {
+                    /*
+                     * 限速，设置定时器，并将限速标志位置位
+                     */
                     src->read->delayed = 1;
                     delay = (ngx_msec_t) (- limit * 1000 / limit_rate + 1);
                     ngx_add_timer(src->read, delay);
                     break;
                 }
 
+                /* 计算本次可以接收多少数据，才不会导致超出限速范围 */
                 if ((off_t) size > limit) {
                     size = (size_t) limit;
                 }
             }
 
+            /* 从b->last开始的内存开始接收数据 */
             n = src->recv(src, b->last, size);
 
+            /* n == NGX_AGAIN表示本次没有接收到数据， n == 0表示连接已经断开 */
             if (n == NGX_AGAIN || n == 0) {
                 break;
             }
 
+            /* n > 0表示本次接收到了n字节的数据，然后判断本次接收完之后是否需要限速 */
             if (n > 0) {
                 if (limit_rate) {
                     delay = (ngx_msec_t) (n * 1000 / limit_rate);
@@ -1199,6 +1295,10 @@ ngx_stream_proxy_process(ngx_stream_session_t *s, ngx_uint_t from_upstream,
                     src->read->eof = 1;
                 }
 
+                /*
+                 * 因为接收到了数据，所以需要立刻发送出去，于是将do_write置位，并后移b->last指针
+                 * 更新已接收到的数据长度
+                 */
                 *received += n;
                 b->last += n;
                 do_write = 1;
@@ -1219,6 +1319,12 @@ ngx_stream_proxy_process(ngx_stream_session_t *s, ngx_uint_t from_upstream,
         break;
     }
 
+    /*
+     * src->read->eof为1表示当前处理的src连接的字符流已经结束，
+     * b->pos == b->last为1表示已经向目标连接发送了全部数据
+     * dst && dst->read->eof成立表示dst连接已经读完了数据
+     * 如果是这样的话就可以结束upstream请求了。
+     */
     if (src->read->eof && (b->pos == b->last || (dst && dst->read->eof))) {
         handler = c->log->handler;
         c->log->handler = NULL;
@@ -1237,6 +1343,7 @@ ngx_stream_proxy_process(ngx_stream_session_t *s, ngx_uint_t from_upstream,
         return;
     }
 
+    /* src->read->eof为1表示从src连接读完了所有数据，可以关闭src连接的读事件了 */
     flags = src->read->eof ? NGX_CLOSE_EVENT : 0;
 
     if (!src->shared && ngx_handle_read_event(src->read, flags) != NGX_OK) {
@@ -1259,7 +1366,7 @@ ngx_stream_proxy_process(ngx_stream_session_t *s, ngx_uint_t from_upstream,
     }
 }
 
-
+/* 尝试继续与其他后端服务器建立连接，后端服务器通过负载均衡算法选择 */
 static void
 ngx_stream_proxy_next_upstream(ngx_stream_session_t *s)
 {
@@ -1273,6 +1380,10 @@ ngx_stream_proxy_next_upstream(ngx_stream_session_t *s)
 
     u = s->upstream;
 
+    /*
+     * 在和下一台后端服务器建链之前，先调用u->peer.free设置本台建链失败的后端服务器的
+     * 一些状态，比如失败次数，更新有效权重之类的。
+     */
     if (u->peer.sockaddr) {
         u->peer.free(&u->peer, u->peer.data, NGX_PEER_FAILED);
         u->peer.sockaddr = NULL;
@@ -1282,6 +1393,7 @@ ngx_stream_proxy_next_upstream(ngx_stream_session_t *s)
 
     timeout = pscf->next_upstream_timeout;
 
+    /* 如果可重试次数已经为0或者选择下一台后端服务器的时间也超时了，就需要结束请求，关闭连接了 */
     if (u->peer.tries == 0
         || !pscf->next_upstream
         || (timeout && ngx_current_msec - u->peer.start_time >= timeout))
@@ -1290,6 +1402,7 @@ ngx_stream_proxy_next_upstream(ngx_stream_session_t *s)
         return;
     }
 
+    /* 先获取nginx与后端服务器建链失败的连接对象，如果还在，则先关闭这个连接对象 */
     pc = u->peer.connection;
 
     if (pc) {
@@ -1309,6 +1422,7 @@ ngx_stream_proxy_next_upstream(ngx_stream_session_t *s)
         u->peer.connection = NULL;
     }
 
+    /* 尝试再次与后端服务器建立连接，选择的后端服务器是通过负载均衡算法计算出来的 */
     ngx_stream_proxy_connect(s);
 }
 

@@ -151,7 +151,7 @@ struct ngx_stream_session_s {
 
     ngx_connection_t       *connection;  // 客户端与Nginx之间的连接对象
 
-    off_t                   received;
+    off_t                   received;  // 已接收的来自客户端接的数据长度
 
     ngx_log_handler_pt      log_handler;
 

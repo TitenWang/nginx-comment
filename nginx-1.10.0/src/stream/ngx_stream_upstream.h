@@ -95,15 +95,19 @@ struct ngx_stream_upstream_srv_conf_s {
 
 typedef struct {
     ngx_peer_connection_t              peer;  // 与后端服务器之间的连接对象
+
+    /* 存储客户端发给nginx的请求，nginx会从这里获取数据然后发送给后端服务器 */
     ngx_buf_t                          downstream_buf;
+
+    /* 存储后端服务器发给nginx的响应，nginx会从这里获取数据然后发送给客户端 */
     ngx_buf_t                          upstream_buf;
-    off_t                              received;
-    time_t                             start_sec;
+    off_t                              received;  // 已经接收到的来自后端服务器的数据总长度
+    time_t                             start_sec;  // 开始处理upstream请求的时间
     ngx_uint_t                         responses;
 #if (NGX_STREAM_SSL)
     ngx_str_t                          ssl_name;
 #endif
-    unsigned                           connected:1;
+    unsigned                           connected:1;  // 表示nginx与上游服务器建链成功
     unsigned                           proxy_protocol:1;
 } ngx_stream_upstream_t;
 
