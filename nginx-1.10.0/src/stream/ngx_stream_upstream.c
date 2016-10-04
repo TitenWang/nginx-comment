@@ -64,7 +64,7 @@ ngx_module_t  ngx_stream_upstream_module = {
     NGX_MODULE_V1_PADDING
 };
 
-
+/* 当配置文件中出现upstream块的时候就会调用这个函数进行解析 */
 static char *
 ngx_stream_upstream(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
 {
@@ -85,6 +85,12 @@ ngx_stream_upstream(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
     u.no_resolve = 1;
     u.no_port = 1;
 
+    /*
+     * 因为是解析到一个upstream块，所以需要以所有的flags调用ngx_stream_upstream_add。那什么情况下
+     * 会以0调用ngx_stream_upstream_add函数呢?就是在解析proxy_pass命令的时候，因为在解析这个命令的
+     * 时候，其目的是找到对应的upstream块的配置信息，而对应的upstream块配置信息就是在解析到具体的
+     * upstream{}的时候创建的。
+     */
     uscf = ngx_stream_upstream_add(cf, &u, NGX_STREAM_UPSTREAM_CREATE
                                            |NGX_STREAM_UPSTREAM_WEIGHT
                                            |NGX_STREAM_UPSTREAM_MAX_FAILS
@@ -133,6 +139,7 @@ ngx_stream_upstream(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
         }
     }
 
+    /*一个upstream块内可能会出现多个server指令，所以以动态数组进行组织*/
     uscf->servers = ngx_array_create(cf->pool, 4,
                                      sizeof(ngx_stream_upstream_server_t));
     if (uscf->servers == NULL) {
@@ -142,6 +149,7 @@ ngx_stream_upstream(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
 
     /* parse inside upstream{} */
 
+    /* 开始解析upstream块，当解析到server指令的时候，就会调用ngx_stream_upstream_server进行server指令解析 */
     pcf = *cf;
     cf->ctx = ctx;
     cf->cmd_type = NGX_STREAM_UPS_CONF;
@@ -406,6 +414,10 @@ ngx_stream_upstream_add(ngx_conf_t *cf, ngx_url_t *u, ngx_uint_t flags)
         us->naddrs = 1;
     }
 
+    /*
+     * 从umcf->upstreams中申请一个元素，存储此次解析到的upstream块信息，同时将解析到的upstream块信息
+     * 作为返回值返回
+     */
     uscfp = ngx_array_push(&umcf->upstreams);
     if (uscfp == NULL) {
         return NULL;
@@ -449,6 +461,10 @@ ngx_stream_upstream_init_main_conf(ngx_conf_t *cf, void *conf)
 
     uscfp = umcf->upstreams.elts;
 
+    /*
+     * 遍历stream块内的所有upstream块，进行后端服务器负载均衡的初始化，这里的负载均衡
+     * 和http模块的负载均衡如出一辙。
+     */
     for (i = 0; i < umcf->upstreams.nelts; i++) {
 
         init = uscfp[i]->peer.init_upstream

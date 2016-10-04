@@ -19,7 +19,7 @@ static void ngx_stream_ssl_init_connection(ngx_ssl_t *ssl, ngx_connection_t *c);
 static void ngx_stream_ssl_handshake_handler(ngx_connection_t *c);
 #endif
 
-
+/* tcp连接成功建立之后的回调方法 */
 void
 ngx_stream_init_connection(ngx_connection_t *c)
 {
@@ -45,6 +45,11 @@ ngx_stream_init_connection(ngx_connection_t *c)
 
     port = c->listening->servers;
 
+    /*
+     * port->naddrs > 1表明监听该端口的ip地址有多个并且其中有通配符，由于有通配符，所以监听这个端口的所有
+     * ip地址共用一个监听对象ngx_listening_t。由于有多个ip地址共用一个监听对象，所以要找出此次请求对应的
+     * 真正ip地址，这个就是ngx_connection_local_sockaddr()函数所要做的工作。
+     */
     if (port->naddrs > 1) {
 
         /*
@@ -55,6 +60,7 @@ ngx_stream_init_connection(ngx_connection_t *c)
          * AcceptEx() and recvmsg() already gave this address.
          */
 
+        /* 在ip地址存在通配符的情况下，需要获取触发某次请求的真正ip地址，存放在c->local_sockaddr中 */
         if (ngx_connection_local_sockaddr(c, NULL, 0) != NGX_OK) {
             ngx_stream_close_connection(c);
             return;
@@ -90,12 +96,22 @@ ngx_stream_init_connection(ngx_connection_t *c)
 
             /* the last address is "*" */
 
+            /*
+             * 通过上面的ngx_connection_local_sockaddr()函数，已经找到了此次请求的真正ip地址
+             * 所以现在要遍历监听该端口的所有ip地址(包括存在通配符的)，用此次请求的真正ip去匹配,
+             * 找到此次请求对应的配置信息，如默认server等信息，存放在addr.conf中。
+             * 如果下面的循环结束并不是break导致的，说明此次请求的ip地址在一开始就是不确定的，也就
+             * 是listen的时候是通配符的情况。所以循环结束后就用通配符(port->addrs.addr = "0.0.0.0")
+             * 对应的conf设置给了当前的请求(在ngx_http_optimize_servers()函数中已经对地址信息进行了
+             * 排序，通配符的地址信息排到了最后)
+             */
             for (i = 0; i < port->naddrs - 1; i++) {
                 if (addr[i].addr == sin->sin_addr.s_addr) {
                     break;
                 }
             }
 
+            /* 找到了此次请求对应的ip地址的配置信息，进行赋值，用于后续处理请求 */
             addr_conf = &addr[i].conf;
 
             break;
@@ -124,10 +140,12 @@ ngx_stream_init_connection(ngx_connection_t *c)
         return;
     }
 
+    /* 设置session对象的一些信息 */
     s->signature = NGX_STREAM_MODULE;
     s->main_conf = addr_conf->ctx->main_conf;
     s->srv_conf = addr_conf->ctx->srv_conf;
 
+    /* s->connection设为客户端与Nginx之间的连接 */
     s->connection = c;
     c->data = s;
 
@@ -135,6 +153,7 @@ ngx_stream_init_connection(ngx_connection_t *c)
 
     ngx_set_connection_log(c, cscf->error_log);
 
+    /* 获取字符串形式的ip地址，用于日志打印 */
     len = ngx_sock_ntop(c->sockaddr, c->socklen, text, NGX_SOCKADDR_STRLEN, 1);
 
     ngx_log_error(NGX_LOG_INFO, c->log, 0, "*%uA %sclient %*s connected to %V",
@@ -167,6 +186,7 @@ ngx_stream_init_connection(ngx_connection_t *c)
         }
     }
 
+    /* 如果是tcp连接，则需要设置TCP_NODELAY选项 */
     if (c->type == SOCK_STREAM
         && cscf->tcp_nodelay
         && c->tcp_nodelay == NGX_TCP_NODELAY_UNSET)
@@ -226,6 +246,7 @@ ngx_stream_init_session(ngx_connection_t *c)
 
     cscf = ngx_stream_get_module_srv_conf(s, ngx_stream_core_module);
 
+    /* 所有stream模块的上下文 */
     s->ctx = ngx_pcalloc(c->pool, sizeof(void *) * ngx_stream_max_module);
     if (s->ctx == NULL) {
         ngx_stream_close_connection(c);

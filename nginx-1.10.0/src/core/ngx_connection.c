@@ -105,7 +105,7 @@ ngx_create_listening(ngx_conf_t *cf, void *sockaddr, socklen_t socklen)
     return ls;
 }
 
-
+/* 为所有的worker子进程都创建该监听套接口 */
 ngx_int_t
 ngx_clone_listening(ngx_conf_t *cf, ngx_listening_t *ls)
 {
@@ -124,6 +124,7 @@ ngx_clone_listening(ngx_conf_t *cf, ngx_listening_t *ls)
     ccf = (ngx_core_conf_t *) ngx_get_conf(cf->cycle->conf_ctx,
                                            ngx_core_module);
 
+    /* 为所有的子进程都创建一个监听套接口 */
     for (n = 1; n < ccf->worker_processes; n++) {
 
         /* create a socket for each worker process */

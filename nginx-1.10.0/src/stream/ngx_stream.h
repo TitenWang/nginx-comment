@@ -23,13 +23,13 @@ typedef struct ngx_stream_session_s  ngx_stream_session_t;
 #include <ngx_stream_upstream.h>
 #include <ngx_stream_upstream_round_robin.h>
 
-
+/* stream{}块下存储所有stream模块的配置项结构体的上下文 */
 typedef struct {
     void                  **main_conf;
     void                  **srv_conf;
 } ngx_stream_conf_ctx_t;
 
-
+/* 存储listen配置指令的参数 */
 typedef struct {
     union {
         struct sockaddr     sockaddr;
@@ -41,15 +41,15 @@ typedef struct {
         struct sockaddr_un  sockaddr_un;
 #endif
         u_char              sockaddr_data[NGX_SOCKADDRLEN];
-    } u;
+    } u;  // listen指令跟的socket地址信息
 
     socklen_t               socklen;
 
     /* server ctx */
-    ngx_stream_conf_ctx_t  *ctx;
+    ngx_stream_conf_ctx_t  *ctx;  // 存储解析server块时生成的配置项上下文
 
-    unsigned                bind:1;
-    unsigned                wildcard:1;
+    unsigned                bind:1;  // bind参数是否配置的标志位
+    unsigned                wildcard:1;  // listen指令监听的ip:port是否存在通配符的标志位
 #if (NGX_STREAM_SSL)
     unsigned                ssl:1;
 #endif
@@ -65,13 +65,13 @@ typedef struct {
     int                     tcp_keepintvl;
     int                     tcp_keepcnt;
 #endif
-    int                     backlog;
-    int                     type;
+    int                     backlog;  // 监听套接口的队列长度
+    int                     type;  // listen监听的socket类型
 } ngx_stream_listen_t;
 
 
 typedef struct {
-    ngx_stream_conf_ctx_t  *ctx;
+    ngx_stream_conf_ctx_t  *ctx;  // 存储解析server块时生成的配置项上下文
     ngx_str_t               addr_text;
 #if (NGX_STREAM_SSL)
     ngx_uint_t              ssl;    /* unsigned   ssl:1; */
@@ -80,7 +80,7 @@ typedef struct {
 
 typedef struct {
     in_addr_t               addr;
-    ngx_stream_addr_conf_t  conf;
+    ngx_stream_addr_conf_t  conf;  // 该地址信息对应的server块配置信息，用于后续寻找到server块
 } ngx_stream_in_addr_t;
 
 
@@ -93,32 +93,40 @@ typedef struct {
 
 #endif
 
-
+/* 该结构体在服务运行过程中使用 */
 typedef struct {
     /* ngx_stream_in_addr_t or ngx_stream_in6_addr_t */
-    void                   *addrs;
-    ngx_uint_t              naddrs;
+    void                   *addrs;  // 存放地址的指针数组
+    ngx_uint_t              naddrs;  // 指针数组的长度
 } ngx_stream_port_t;
 
-
+/* 该结构体用于解析配置文件的时候使用 */
 typedef struct {
-    int                     family;
-    int                     type;
-    in_port_t               port;
+    int                     family;  // 协议族
+    int                     type;  // socket类型
+    in_port_t               port;  // 端口号
+    /* 存放监听该端口的所有地址信息 */
     ngx_array_t             addrs;       /* array of ngx_stream_conf_addr_t */
 } ngx_stream_conf_port_t;
 
 
 typedef struct {
-    ngx_stream_listen_t     opt;
+    ngx_stream_listen_t     opt;  // ip地址对应的listen命令的信息
 } ngx_stream_conf_addr_t;
 
 
 typedef ngx_int_t (*ngx_stream_access_pt)(ngx_stream_session_t *s);
 
-
+/* ngx_stream_core_module模块main级别的配置项结构体 */
 typedef struct {
+    /*
+     * servers动态数组存放的是代表出现在stream块内的server块的配置项结构体，
+     * 在ngx_stream_core_server函数中会将生成的ngx_stream_core_module模块的srv级别
+     * 配置项结构体添加到这个动态数组中。
+     */
     ngx_array_t             servers;     /* ngx_stream_core_srv_conf_t */
+
+    /* 存放的是stream块内所有server块内出现的listen指令的参数，一个listen对应其中的一个元素 */
     ngx_array_t             listen;      /* ngx_stream_listen_t */
     ngx_stream_access_pt    limit_conn_handler;
     ngx_stream_access_pt    access_handler;
@@ -127,21 +135,21 @@ typedef struct {
 
 typedef void (*ngx_stream_handler_pt)(ngx_stream_session_t *s);
 
-
+/* ngx_stream_core_module模块srv级别的配置项结构体 */
 typedef struct {
-    ngx_stream_handler_pt   handler;
-    ngx_stream_conf_ctx_t  *ctx;
-    u_char                 *file_name;
+    ngx_stream_handler_pt   handler;  // 调用这个模块进行后续处理
+    ngx_stream_conf_ctx_t  *ctx;  // 存储解析server块时生成的配置项上下文
+    u_char                 *file_name;  // 指向配置文件的名字
     ngx_int_t               line;
-    ngx_log_t              *error_log;
-    ngx_flag_t              tcp_nodelay;
+    ngx_log_t              *error_log;  // 存储error_log指令的参数
+    ngx_flag_t              tcp_nodelay;  // 存储tcp_nodelay指令的参数
 } ngx_stream_core_srv_conf_t;
 
 
 struct ngx_stream_session_s {
     uint32_t                signature;         /* "STRM" */
 
-    ngx_connection_t       *connection;
+    ngx_connection_t       *connection;  // 客户端与Nginx之间的连接对象
 
     off_t                   received;
 

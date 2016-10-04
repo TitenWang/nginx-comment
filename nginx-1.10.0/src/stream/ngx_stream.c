@@ -62,7 +62,9 @@ ngx_module_t  ngx_stream_module = {
     NGX_MODULE_V1_PADDING
 };
 
-
+/*
+ * 当配置文件中出现stream{}配置项的时候就会调用这个函数，开启stream块内所有配置项的解析
+ */
 static char *
 ngx_stream_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -76,6 +78,7 @@ ngx_stream_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_stream_core_srv_conf_t   **cscfp;
     ngx_stream_core_main_conf_t   *cmcf;
 
+    /* 如果配置文件中出现了两个stream块，那么在解析第二个stream块的时候就会报错 */
     if (*(ngx_stream_conf_ctx_t **) conf) {
         return "is duplicate";
     }
@@ -96,6 +99,7 @@ ngx_stream_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     /* the stream main_conf context, it's the same in the all stream contexts */
 
+    /* 创建用于存储所有stream模块main级别配置项结构体的指针数组 */
     ctx->main_conf = ngx_pcalloc(cf->pool,
                                  sizeof(void *) * ngx_stream_max_module);
     if (ctx->main_conf == NULL) {
@@ -108,6 +112,7 @@ ngx_stream_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
      * the server{}s' srv_conf's
      */
 
+    /* 创建用于存储所有stream模块在main级别下面的srv级别的配置项结构体的指针数组 */
     ctx->srv_conf = ngx_pcalloc(cf->pool,
                                 sizeof(void *) * ngx_stream_max_module);
     if (ctx->srv_conf == NULL) {
@@ -119,6 +124,10 @@ ngx_stream_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
      * create the main_conf's and the null srv_conf's of the all stream modules
      */
 
+    /*
+     * 遍历所有的stream模块，分别调用stream模块实现的用于存储main级别下面的配置项的结构体
+     * 并挂载到上面刚刚创建的结构体指针数组中。
+     */
     for (m = 0; cf->cycle->modules[m]; m++) {
         if (cf->cycle->modules[m]->type != NGX_STREAM_MODULE) {
             continue;
@@ -127,6 +136,7 @@ ngx_stream_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         module = cf->cycle->modules[m]->ctx;
         mi = cf->cycle->modules[m]->ctx_index;
 
+        /* 创建main级别下面的配置项结构体 */
         if (module->create_main_conf) {
             ctx->main_conf[mi] = module->create_main_conf(cf);
             if (ctx->main_conf[mi] == NULL) {
@@ -134,6 +144,7 @@ ngx_stream_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             }
         }
 
+        /* 创建在main级别下面的srv级别的配置项结构体 */
         if (module->create_srv_conf) {
             ctx->srv_conf[mi] = module->create_srv_conf(cf);
             if (ctx->srv_conf[mi] == NULL) {
@@ -145,6 +156,10 @@ ngx_stream_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     /* parse inside the stream{} block */
 
+    /*
+     * 上面创建好了存储stream{}模块内部可能出现的模块的配置项的结构体，下面就可以
+     * 开始解析stream{}内部的配置项了。
+     */
     pcf = *cf;
     cf->ctx = ctx;
 
@@ -163,6 +178,10 @@ ngx_stream_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     cmcf = ctx->main_conf[ngx_stream_core_module.ctx_index];
     cscfp = cmcf->servers.elts;
 
+    /*
+     * 程序执行到这里表明stream{}块下的配置项都已经解析完毕，所以就需要做一个初始化工作，
+     * 以及合并srv级别的配置项。
+     */
     for (m = 0; cf->cycle->modules[m]; m++) {
         if (cf->cycle->modules[m]->type != NGX_STREAM_MODULE) {
             continue;
@@ -175,6 +194,7 @@ ngx_stream_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
         cf->ctx = ctx;
 
+        /* 调用所有的stream模块实现的init_main_conf做一些初始化工作 */
         if (module->init_main_conf) {
             rv = module->init_main_conf(cf, ctx->main_conf[mi]);
             if (rv != NGX_CONF_OK) {
@@ -183,6 +203,7 @@ ngx_stream_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             }
         }
 
+        /* 合并srv级别的配置项 */
         for (s = 0; s < cmcf->servers.nelts; s++) {
 
             /* merge the server{}s' srv_conf's */
@@ -201,6 +222,7 @@ ngx_stream_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
     }
 
+    /* 调用所有stream模块实现的postconfiguration方法 */
     for (m = 0; cf->cycle->modules[m]; m++) {
         if (cf->cycle->modules[m]->type != NGX_STREAM_MODULE) {
             continue;
@@ -224,8 +246,10 @@ ngx_stream_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    /* cmcf->listen存放的是解析stream块内所有server块的listen命令的信息 */
     listen = cmcf->listen.elts;
 
+    /* 遍历所有的listen命令配置信息，新增监听套接口信息 */
     for (i = 0; i < cmcf->listen.nelts; i++) {
         if (ngx_stream_add_ports(cf, &ports, &listen[i]) != NGX_OK) {
             return NGX_CONF_ERROR;
@@ -235,7 +259,7 @@ ngx_stream_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return ngx_stream_optimize_servers(cf, &ports);
 }
 
-
+/* 新增监听套接口信息 */
 static ngx_int_t
 ngx_stream_add_ports(ngx_conf_t *cf, ngx_array_t *ports,
     ngx_stream_listen_t *listen)
@@ -267,15 +291,18 @@ ngx_stream_add_ports(ngx_conf_t *cf, ngx_array_t *ports,
         break;
 #endif
 
+    /* ipv4的addr和port信息 */
     default: /* AF_INET */
         sin = &listen->u.sockaddr_in;
         p = sin->sin_port;
         break;
     }
 
+    /* 遍历已经加入到ports中的port，看本次需要添加的port是否已经加入过了 */
     port = ports->elts;
     for (i = 0; i < ports->nelts; i++) {
 
+        /* 如果监听的是同一个端口，并且是同一个协议族以及相同的socket类型，则说明port添加过了 */
         if (p == port[i].port
             && listen->type == port[i].type
             && sa->sa_family == port[i].family)
@@ -289,15 +316,22 @@ ngx_stream_add_ports(ngx_conf_t *cf, ngx_array_t *ports,
 
     /* add a port to the port list */
 
+    /* 从ports动态数组中申请一个元素，用于存放本次需要添加的port信息 */
     port = ngx_array_push(ports);
     if (port == NULL) {
         return NGX_ERROR;
     }
 
+    /* 设置port的一些信息 */
     port->family = sa->sa_family;
     port->type = listen->type;
     port->port = p;
 
+    /*
+     * 因为对于同一个端口，可能会监听不同的ip地址，所以需要为存放不同的ip地址做准备.
+     * 例如，server a { listen 192.168.0.1:80; } server b { listen 192.168.0.2:80; }，
+     * 那么对于同一个端口不同的ip的情况，就会将ip地址存放在port->addrs中。
+     */
     if (ngx_array_init(&port->addrs, cf->temp_pool, 2,
                        sizeof(ngx_stream_conf_addr_t))
         != NGX_OK)
@@ -307,11 +341,13 @@ ngx_stream_add_ports(ngx_conf_t *cf, ngx_array_t *ports,
 
 found:
 
+    /* 从port->addrs动态数组中申请一个元素，存放ip地址信息 */
     addr = ngx_array_push(&port->addrs);
     if (addr == NULL) {
         return NGX_ERROR;
     }
 
+    /* 将listen命令的参数信息存放到ip地址信息的opt字段中 */
     addr->opt = *listen;
 
     return NGX_OK;
@@ -328,12 +364,15 @@ ngx_stream_optimize_servers(ngx_conf_t *cf, ngx_array_t *ports)
     ngx_stream_conf_addr_t      *addr;
     ngx_stream_core_srv_conf_t  *cscf;
 
+    /* 遍历配置文件中stream块内的所有listen命令监听的port端口 */
     port = ports->elts;
     for (p = 0; p < ports->nelts; p++) {
 
+        /* 对监听同一个端口的所有ip地址进行排序，经过这个排序，带有通配符的地址会在后面 */
         ngx_sort(port[p].addrs.elts, (size_t) port[p].addrs.nelts,
                  sizeof(ngx_stream_conf_addr_t), ngx_stream_cmp_conf_addrs);
 
+        /* addr保存着解析配置文件过程得到的监听同一个端口的所有地址信息 */
         addr = port[p].addrs.elts;
         last = port[p].addrs.nelts;
 
@@ -352,6 +391,13 @@ ngx_stream_optimize_servers(ngx_conf_t *cf, ngx_array_t *ports)
 
         i = 0;
 
+        /*
+         * 遍历监听同一个端口的所有ip地址，如果存放通配符的情况，那么针对这个端口，只会创建
+         * 一个监听套接口，例如 listen *:80; listen 192.168.0.1:80; listen 192.168.0.2:80;
+         * 对于上面的这种情况，只会创建一个ngx_listening_t结构体。如果不存在通配符的情况，如:
+         * listen 192.168.0.1:80; listen 192.168.0.2:80;，这个时候就会创建两个ngx_listening_t
+         * 监听套接口。
+         */
         while (i < last) {
 
             if (bind_wildcard && !addr[i].opt.bind) {
@@ -359,14 +405,16 @@ ngx_stream_optimize_servers(ngx_conf_t *cf, ngx_array_t *ports)
                 continue;
             }
 
+            /* 创建一个ngx_listening_t结构体对象 */
             ls = ngx_create_listening(cf, &addr[i].opt.u.sockaddr,
                                       addr[i].opt.socklen);
             if (ls == NULL) {
                 return NGX_CONF_ERROR;
             }
 
+            /* 设置ngx_listening_t结构体一些信息 */
             ls->addr_ntop = 1;
-            ls->handler = ngx_stream_init_connection;
+            ls->handler = ngx_stream_init_connection; //  新的tcp连接成功建立了后的处理方法
             ls->pool_size = 256;
             ls->type = addr[i].opt.type;
 
@@ -400,6 +448,7 @@ ngx_stream_optimize_servers(ngx_conf_t *cf, ngx_array_t *ports)
                 return NGX_CONF_ERROR;
             }
 
+            /* 存放着监听该端口的所有地址信息 */
             ls->servers = stport;
 
             stport->naddrs = i + 1;
@@ -443,6 +492,11 @@ ngx_stream_add_addrs(ngx_conf_t *cf, ngx_stream_port_t *stport,
     ngx_stream_in_addr_t  *addrs;
     u_char                 buf[NGX_SOCKADDR_STRLEN];
 
+    /*
+     * 申请用于存放监听同一个端口的所有ip地址信息的内存，因为存放通配符情况，
+     * 所以对于该端口只会创建一个监听套接口，也因此需要将多个地址信息管理起来，
+     * 后续该端口有请求来的时候才知道是由哪个地址来处理。
+     */
     stport->addrs = ngx_pcalloc(cf->pool,
                                 stport->naddrs * sizeof(ngx_stream_in_addr_t));
     if (stport->addrs == NULL) {
@@ -454,13 +508,14 @@ ngx_stream_add_addrs(ngx_conf_t *cf, ngx_stream_port_t *stport,
     for (i = 0; i < stport->naddrs; i++) {
 
         sin = &addr[i].opt.u.sockaddr_in;
-        addrs[i].addr = sin->sin_addr.s_addr;
+        addrs[i].addr = sin->sin_addr.s_addr;  // 保存ip地址信息
 
-        addrs[i].conf.ctx = addr[i].opt.ctx;
+        addrs[i].conf.ctx = addr[i].opt.ctx;  // 保存监听该地址所在server块的配置上下文
 #if (NGX_STREAM_SSL)
         addrs[i].conf.ssl = addr[i].opt.ssl;
 #endif
 
+        /* 下面用于生成字符串形式的ip地址信息，并保存在addrs[i].conf.addr_text */
         len = ngx_sock_ntop(&addr[i].opt.u.sockaddr, addr[i].opt.socklen, buf,
                             NGX_SOCKADDR_STRLEN, 1);
 

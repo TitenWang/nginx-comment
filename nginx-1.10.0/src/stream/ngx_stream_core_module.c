@@ -82,7 +82,7 @@ ngx_module_t  ngx_stream_core_module = {
     NGX_MODULE_V1_PADDING
 };
 
-
+/* 创建用于存储ngx_stream_core_module模块生成的mian级别的配置项结构体 */
 static void *
 ngx_stream_core_create_main_conf(ngx_conf_t *cf)
 {
@@ -170,7 +170,7 @@ ngx_stream_core_error_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return ngx_log_set_log(cf, &cscf->error_log);
 }
 
-
+/* 解析到stream块内的server{}配置块时就会调用这个函数 */
 static char *
 ngx_stream_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -183,22 +183,28 @@ ngx_stream_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_stream_core_srv_conf_t   *cscf, **cscfp;
     ngx_stream_core_main_conf_t  *cmcf;
 
+    /*
+     * 在解析到stream块内的server配置块的时候，会建立属于这个server块的上下文，ngx_stream_conf_ctx_t
+     */
     ctx = ngx_pcalloc(cf->pool, sizeof(ngx_stream_conf_ctx_t));
     if (ctx == NULL) {
         return NGX_CONF_ERROR;
     }
 
+    /* server块下的配置上下文的main_conf指针数组将指向stream块下的配置上下文的main_conf指针数组 */
     stream_ctx = cf->ctx;
     ctx->main_conf = stream_ctx->main_conf;
 
     /* the server{}'s srv_conf */
 
+    /* 分配用于存储出现在server块内的所有stream模块srv级别配置项结构体的指针数组 */
     ctx->srv_conf = ngx_pcalloc(cf->pool,
                                 sizeof(void *) * ngx_stream_max_module);
     if (ctx->srv_conf == NULL) {
         return NGX_CONF_ERROR;
     }
 
+    /* 遍历所有stream模块，调用stream模块的create_srv_conf创建存储srv级别的配置项的结构体 */
     for (m = 0; cf->cycle->modules[m]; m++) {
         if (cf->cycle->modules[m]->type != NGX_STREAM_MODULE) {
             continue;
@@ -218,11 +224,18 @@ ngx_stream_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     /* the server configuration context */
 
+    /* 获取ngx_stream_core_module模块的srv级别的配置项结构体，这个配置项结构体就代表了这个server块 */
     cscf = ctx->srv_conf[ngx_stream_core_module.ctx_index];
     cscf->ctx = ctx;
 
     cmcf = ctx->main_conf[ngx_stream_core_module.ctx_index];
-
+    
+    /*
+     * 将ngx_stream_core_module模块的srv级别的配置项结构体挂载到ngx_stream_core_module模块的main级别
+     * 配置项结构体的servers动态数组中。其实可以这么说，ngx_stream_core_module模块的mian级别配置项
+     * 结构体代表的就是stream配置块，而解析server配置块时生成的ngx_stream_core_module模块的srv级别的
+     * 配置项结构体代表的就是server配置块。
+     */
     cscfp = ngx_array_push(&cmcf->servers);
     if (cscfp == NULL) {
         return NGX_CONF_ERROR;
@@ -233,6 +246,7 @@ ngx_stream_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     /* parse inside server{} */
 
+    /* 开始解析server配置块里面的配置项 */
     pcf = *cf;
     cf->ctx = ctx;
     cf->cmd_type = NGX_STREAM_SRV_CONF;
@@ -244,7 +258,7 @@ ngx_stream_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return rv;
 }
 
-
+/* 解析到server块内的listen配置项时会调用这个函数 */
 static char *
 ngx_stream_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -261,6 +275,7 @@ ngx_stream_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     struct sockaddr_in6          *sin6;
 #endif
 
+    /* 获取listen指令的参数 */
     value = cf->args->elts;
 
     ngx_memzero(&u, sizeof(ngx_url_t));
@@ -268,6 +283,7 @@ ngx_stream_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     u.url = value[1];
     u.listen = 1;
 
+    /* 解析listen命令的第一个参数，即url */
     if (ngx_parse_url(cf->pool, &u) != NGX_OK) {
         if (u.err) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
@@ -278,10 +294,15 @@ ngx_stream_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    /* 获取ngx_stream_core_module模块的main级别配置项结构体 */
     cmcf = ngx_stream_conf_get_module_main_conf(cf, ngx_stream_core_module);
 
     ls = cmcf->listen.elts;
 
+    /*
+     * 遍历已经解析到的listen命令，但本次解析到的是否和之前已经解析过的listen命令一样，
+     * 如果一样的话，这样是不允许的，因为不允许两个server块内同时监听同一个ip:port.
+     */
     for (i = 0; i < cmcf->listen.nelts; i++) {
 
         sa = &ls[i].u.sockaddr;
@@ -332,6 +353,10 @@ ngx_stream_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    /*
+     * 从ngx_stream_core_module模块main级别配置项结构体的listen动态数组中申请一个元素，
+     * 存储本次listen命令的参数 
+     */
     ls = ngx_array_push(&cmcf->listen);
     if (ls == NULL) {
         return NGX_CONF_ERROR;
@@ -343,7 +368,7 @@ ngx_stream_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     ls->socklen = u.socklen;
     ls->backlog = NGX_LISTEN_BACKLOG;
-    ls->type = SOCK_STREAM;
+    ls->type = SOCK_STREAM;  // 监听的socket类型为SOCK_STREAM
     ls->wildcard = u.wildcard;
     ls->ctx = cf->ctx;
 
@@ -353,11 +378,15 @@ ngx_stream_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     backlog = 0;
 
+    /* 
+     * 下面开始遍历listen命令后续的参数，并进行响应解析，然后将解析结果设置到
+     * ngx_stream_listen_t中的对应字段中 
+     */
     for (i = 2; i < cf->args->nelts; i++) {
 
 #if !(NGX_WIN32)
         if (ngx_strcmp(value[i].data, "udp") == 0) {
-            ls->type = SOCK_DGRAM;
+            ls->type = SOCK_DGRAM;  // 设置监听的socket类型为udp
             continue;
         }
 #endif
@@ -542,6 +571,7 @@ ngx_stream_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    /* 如果监听的是udp，则判断配置命令是否合法。因为有些参数不适用于udp */
     if (ls->type == SOCK_DGRAM) {
         if (backlog) {
             return "\"backlog\" parameter is incompatible with \"udp\"";

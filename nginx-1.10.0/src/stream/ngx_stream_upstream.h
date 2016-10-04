@@ -24,6 +24,7 @@
 
 
 typedef struct {
+    /* 存放的是stream块内出现的所有upstream块的配置信息，动态数组的一个元素对应一个upstream块信息 */
     ngx_array_t                        upstreams;
                                            /* ngx_stream_upstream_srv_conf_t */
 } ngx_stream_upstream_main_conf_t;

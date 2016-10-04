@@ -55,7 +55,7 @@ struct ngx_listening_s {
     ngx_listening_t    *previous;  //存储的是老版本Nginx中和新版本Nginx监听同一个地址的监听对象
     ngx_connection_t   *connection;  //当前监听端口对应着的连接
 
-    ngx_uint_t          worker;
+    ngx_uint_t          worker;  // worker子进程的编号
 
     /*为1时表示当前监听句柄有效，且执行ngx_init_cycle时不关闭监听端口*/
     unsigned            open:1;

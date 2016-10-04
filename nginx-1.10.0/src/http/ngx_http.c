@@ -1843,9 +1843,9 @@ ngx_http_cmp_dns_wildcards(const void *one, const void *two)
 /*
  * 关于创建cycle->listening中的监听对象，需要注意如下:
  *   1.如果某个端口上有任意数目ip的listen配置，即有通配符的情况，那么在该端口上只会创建一个监听对象ngx_listening_t
- * 不管是否还有其他ip在该端口上有listen配置，在后面创建监听对象时也只会创建一个，例如:server { listen 127.0.0.1:80}
- * server {listen 80}。而如果某个端口上面所有监听的ip地址没有通配符，那么一个ip:port就会创建一个监听对象，例如:
- * server {listen 192.168.0.1:80} server {listen 192.168.1.1:80}就会创建两个ngx_listening_t.
+ * 不管是否还有其他ip在该端口上有listen配置，在后面创建监听对象时也只会创建一个，例如:server { listen 127.0.0.1:80;}
+ * server {listen 80;}。而如果某个端口上面所有监听的ip地址没有通配符，那么一个ip:port就会创建一个监听对象，例如:
+ * server {listen 192.168.0.1:80;} server {listen 192.168.1.1:80;}就会创建两个ngx_listening_t.
  */
 static ngx_int_t
 ngx_http_init_listening(ngx_conf_t *cf, ngx_http_conf_port_t *port)
