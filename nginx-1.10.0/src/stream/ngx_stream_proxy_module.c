@@ -1612,6 +1612,7 @@ ngx_stream_proxy_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     cscf = ngx_stream_conf_get_module_srv_conf(cf, ngx_stream_core_module);
 
+    /* 设置handler，开启后续流程的处理 */
     cscf->handler = ngx_stream_proxy_handler;
 
     value = cf->args->elts;
@@ -1623,6 +1624,7 @@ ngx_stream_proxy_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     u.url = *url;
     u.no_resolve = 1;
 
+    /* 获取proxy_pass命令参数对应的upstream配置块信息 */
     pscf->upstream = ngx_stream_upstream_add(cf, &u, 0);
     if (pscf->upstream == NULL) {
         return NGX_CONF_ERROR;

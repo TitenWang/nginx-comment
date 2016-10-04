@@ -76,7 +76,8 @@ struct ngx_http_upstream_rr_peers_s {
 
     ngx_http_upstream_rr_peers_t   *next;  //管理一个upstream块中所有备份服务器组成的列表
 
-    ngx_http_upstream_rr_peer_t    *peer;  // 存储着一个upstream块内所有非备份服务器组成的列表
+    /* 存储着一个upstream块内所有服务器组成的列表(备份和非备份服务器分开组织) */
+    ngx_http_upstream_rr_peer_t    *peer;
 };
 
 
@@ -131,7 +132,10 @@ typedef struct {
     ngx_http_upstream_rr_peers_t   *peers;  // 管理后端服务器列表的对象
     ngx_http_upstream_rr_peer_t    *current;  // 当前所指向的后端服务器对象
 
-    /* 指向后端服务器是否被选中的位图地址，如果后端服务器个数小于uintptr_t类型的位数，则指向data地址，否则按需申请 */
+    /* 
+     * 指向表示后端服务器是否被选中的位图地址，如果后端服务器个数小于uintptr_t类型的位数，
+     * 则指向data地址，否则按需申请
+     */
     uintptr_t                      *tried;
     /* 如果后端服务器个数小于uintptr_t类型的位数，则用data来存放位图，此时tried指向data地址 */
     uintptr_t                       data;

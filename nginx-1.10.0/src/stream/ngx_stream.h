@@ -25,8 +25,8 @@ typedef struct ngx_stream_session_s  ngx_stream_session_t;
 
 /* stream{}块下存储所有stream模块的配置项结构体的上下文 */
 typedef struct {
-    void                  **main_conf;
-    void                  **srv_conf;
+    void                  **main_conf;  // 存储所有stream模块生成的main级别配置项结构体指针数组
+    void                  **srv_conf;  // 存储所有stream模块生成的srv级别配置项结构体的指针数组
 } ngx_stream_conf_ctx_t;
 
 /* 存储listen配置指令的参数 */
@@ -159,7 +159,7 @@ struct ngx_stream_session_s {
     void                  **main_conf;
     void                  **srv_conf;
 
-    ngx_stream_upstream_t  *upstream;
+    ngx_stream_upstream_t  *upstream;  // upstream对象
 };
 
 

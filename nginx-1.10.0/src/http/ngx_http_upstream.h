@@ -82,7 +82,7 @@ typedef ngx_int_t (*ngx_http_upstream_init_pt)(ngx_conf_t *cf,
 typedef ngx_int_t (*ngx_http_upstream_init_peer_pt)(ngx_http_request_t *r,
     ngx_http_upstream_srv_conf_t *us);
 
-
+// upstream块内的后端服务器列表以及初始化upstream的方法
 typedef struct {
     /*
      * 如果使用默认的加权轮询算法，则该函数为ngx_http_upstream_init_round_robin()，该函数

@@ -99,10 +99,10 @@ ngx_stream_init_connection(ngx_connection_t *c)
             /*
              * 通过上面的ngx_connection_local_sockaddr()函数，已经找到了此次请求的真正ip地址
              * 所以现在要遍历监听该端口的所有ip地址(包括存在通配符的)，用此次请求的真正ip去匹配,
-             * 找到此次请求对应的配置信息，如默认server等信息，存放在addr.conf中。
+             * 找到此次请求对应的配置信息，存放在addr.conf中。
              * 如果下面的循环结束并不是break导致的，说明此次请求的ip地址在一开始就是不确定的，也就
              * 是listen的时候是通配符的情况。所以循环结束后就用通配符(port->addrs.addr = "0.0.0.0")
-             * 对应的conf设置给了当前的请求(在ngx_http_optimize_servers()函数中已经对地址信息进行了
+             * 对应的conf设置给了当前的请求(在ngx_stream_optimize_servers()函数中已经对地址信息进行了
              * 排序，通配符的地址信息排到了最后)
              */
             for (i = 0; i < port->naddrs - 1; i++) {
@@ -253,6 +253,7 @@ ngx_stream_init_session(ngx_connection_t *c)
         return;
     }
 
+    /* 调用使用stream机制的模块实现的handler方法 */
     cscf->handler(s);
 }
 

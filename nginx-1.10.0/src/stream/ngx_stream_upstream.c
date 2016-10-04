@@ -107,11 +107,13 @@ ngx_stream_upstream(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
         return NGX_CONF_ERROR;
     }
 
+    /* upstream块内的main级别配置项直接指向stream块内的main级别配置项 */
     stream_ctx = cf->ctx;
     ctx->main_conf = stream_ctx->main_conf;
 
     /* the upstream{}'s srv_conf */
 
+    /* 分配用于存放所有stream模块生成的srv级别配置项结构体的指针数组 */
     ctx->srv_conf = ngx_pcalloc(cf->pool,
                                 sizeof(void *) * ngx_stream_max_module);
     if (ctx->srv_conf == NULL) {
@@ -162,6 +164,7 @@ ngx_stream_upstream(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
         return rv;
     }
 
+    /* upstream块内必须至少配置一个server指令，否则是非法的 */
     if (uscf->servers->nelts == 0) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "no servers are inside upstream");
@@ -171,7 +174,7 @@ ngx_stream_upstream(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
     return rv;
 }
 
-
+/* 当upstream块内出现server配置项的就会调用该函数去解析 */
 static char *
 ngx_stream_upstream_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -184,19 +187,23 @@ ngx_stream_upstream_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_uint_t                     i;
     ngx_stream_upstream_server_t  *us;
 
+    /* 从upstream配置块信息中申请一个存放server配置块信息的结构体 */
     us = ngx_array_push(uscf->servers);
     if (us == NULL) {
         return NGX_CONF_ERROR;
     }
 
+    /* 初始化清空 */
     ngx_memzero(us, sizeof(ngx_stream_upstream_server_t));
 
     value = cf->args->elts;
 
+    /* weight、max_fails和fail_timeout的默认值 */
     weight = 1;
     max_fails = 1;
     fail_timeout = 10;
 
+    /* 解析weight、max_fails以及fail_timeout等参数 */
     for (i = 2; i < cf->args->nelts; i++) {
 
         if (ngx_strncmp(value[i].data, "weight=", 7) == 0) {
@@ -274,6 +281,7 @@ ngx_stream_upstream_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     ngx_memzero(&u, sizeof(ngx_url_t));
 
+    /* 解析server配置项后面的第一个url参数 */
     u.url = value[1];
 
     if (ngx_parse_url(cf->pool, &u) != NGX_OK) {
@@ -291,8 +299,9 @@ ngx_stream_upstream_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    /* 保存解析结果 */
     us->name = u.url;
-    us->addrs = u.addrs;
+    us->addrs = u.addrs;  // 一个主机名字可能会有多个ip地址
     us->naddrs = u.naddrs;
     us->weight = weight;
     us->max_fails = max_fails;

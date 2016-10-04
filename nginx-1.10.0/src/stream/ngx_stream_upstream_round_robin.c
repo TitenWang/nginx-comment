@@ -37,6 +37,7 @@ ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
     ngx_stream_upstream_rr_peer_t   *peer, **peerp;
     ngx_stream_upstream_rr_peers_t  *peers, *backup;
 
+    /* 设置us->peer.init回调，该方法用于 */
     us->peer.init = ngx_stream_upstream_init_round_robin_peer;
 
     if (us->servers) {
@@ -236,6 +237,11 @@ ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
     return NGX_OK;
 }
 
+/*
+ * 该函数会设置get和free方法，以及构造指示所有后端服务器是否被选择过的位图，除此之外，
+ * 也会将us->peer.data字段挂载的后端服务器列表设置到s->upstream->peer.data上。该函数在构造
+ * 发送往上游服务器的请求时调用。
+ */
 
 ngx_int_t
 ngx_stream_upstream_init_round_robin_peer(ngx_stream_session_t *s,
@@ -256,20 +262,38 @@ ngx_stream_upstream_init_round_robin_peer(ngx_stream_session_t *s,
         s->upstream->peer.data = rrp;
     }
 
+    /* 将后端服务器列表挂载到peers字段中 */
     rrp->peers = us->peer.data;
     rrp->current = NULL;
 
-    n = rrp->peers->number;
+    n = rrp->peers->number;  // upstream块中配置的非备份服务器的数量(以ip计数) 
 
+    /*
+     * 如果存在备份的后端服务器，并且备份的后端服务器总数(以ip计数)比非备份的后端服务器总数多，
+     * 则以非备份的后端服务器总数赋值给局部变量n
+     */
     if (rrp->peers->next && rrp->peers->next->number > n) {
         n = rrp->peers->next->number;
     }
 
+    /*
+     * 比较后端服务器总数(以ip计数)是否超过了一个uintptr_t类型的位数，用于后续构造位图，
+     * 如果总数n小于uintptr_t类型的位数，则用一个uintptr_t类型的变量来存储位图，这个位图
+     * 是用来标记在一轮选择中，某个后端服务器是否被选中的标志位。位图是面向一轮选择的，即
+     * 针对一个客户端请求。
+     */
     if (n <= 8 * sizeof(uintptr_t)) {
         rrp->tried = &rrp->data;
         rrp->data = 0;
 
     } else {
+        /*
+         * 程序执行到这里表明后端服务器的总数超过了一个uintptr_t类型的位数，那么就需要多个
+         * uintptr_t类型的变量来存放位图了，下面就是计算需要多少个uintptr_t类型变量的算法，
+         * 这里以37台后端服务器为例说明下，假设是在32位机器上，那么uintptr_t类型就是32位的。
+         * 那么我们就需要两个uintptr_t类型的变量，所以有:
+         * (37 + 31)/32 = 2
+         */
         n = (n + (8 * sizeof(uintptr_t) - 1)) / (8 * sizeof(uintptr_t));
 
         rrp->tried = ngx_pcalloc(s->connection->pool, n * sizeof(uintptr_t));
@@ -278,6 +302,7 @@ ngx_stream_upstream_init_round_robin_peer(ngx_stream_session_t *s,
         }
     }
 
+    /* 设置get、free方法 */
     s->upstream->peer.get = ngx_stream_upstream_get_round_robin_peer;
     s->upstream->peer.free = ngx_stream_upstream_free_round_robin_peer;
     s->upstream->peer.tries = ngx_stream_upstream_tries(rrp->peers);
