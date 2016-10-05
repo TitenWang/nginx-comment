@@ -209,6 +209,12 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
 
 
     /* an upstream implicitly defined by proxy_pass, etc. */
+    /*
+     * 程序执行到这里表明没有配置upstream块，只是用proxy_pass等命令配置了一个url，用来指定
+     * 后端服务器，这个时候也会创建一个存储upstream块配置信息的结构体，只是这个结构体里面
+     * servers等信息为NULL。这个时候就需要用url参数指定的域名来解析ip地址。如果url参数对应
+     * 的域名也对应多个ip地址，那么也需要进行管理，另外，这个时候是没有备份服务器的
+     */
 
     if (us->port == 0) {
         ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
@@ -219,9 +225,11 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
 
     ngx_memzero(&u, sizeof(ngx_url_t));
 
+    /* 获取域名字符串以及端口信息 */
     u.host = us->host;
     u.port = us->port;
 
+    /* 解析域名，获取ip地址以及主机名字 */
     if (ngx_inet_resolve_host(cf->pool, &u) != NGX_OK) {
         if (u.err) {
             ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
@@ -232,8 +240,9 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
         return NGX_ERROR;
     }
 
-    n = u.naddrs;
+    n = u.naddrs;  // 域名对应的ip地址个数
 
+    /* 创建管理后端服务器列表的对象 */
     peers = ngx_pcalloc(cf->pool, sizeof(ngx_http_upstream_rr_peers_t));
     if (peers == NULL) {
         return NGX_ERROR;
@@ -245,13 +254,14 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
     }
 
     peers->single = (n == 1);
-    peers->number = n;
-    peers->weighted = 0;
-    peers->total_weight = n;
+    peers->number = n; // proxy_pass等命令配置的后端服务器个数(以ip计数)
+    peers->weighted = 0;  // 采用默认配置权重，标志位清零
+    peers->total_weight = n;  // 总权重就是后端服务器个数(以ip计数，默认权重是1)
     peers->name = &us->host;
 
     peerp = &peers->peer;
 
+    /* 将域名对应的多个ip地址分别用一个后端服务器信息对象进行管理 */
     for (i = 0; i < u.naddrs; i++) {
         peer[i].sockaddr = u.addrs[i].sockaddr;
         peer[i].socklen = u.addrs[i].socklen;
@@ -265,6 +275,7 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
         peerp = &peer[i].next;
     }
 
+    /* 将管理后端服务器列表的对象挂载到us->peer.data */
     us->peer.data = peers;
 
     /* implicitly defined upstream has no backup servers */

@@ -26,6 +26,10 @@ static void ngx_stream_upstream_save_round_robin_peer_session(
 
 #endif
 
+/*
+ * 该函数用于构造后端服务器组成的链表，并挂载到下面的data字段。该函数在解析完stream块下的main
+ * 级别配置项之后调用
+ */
 
 ngx_int_t
 ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
@@ -37,7 +41,10 @@ ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
     ngx_stream_upstream_rr_peer_t   *peer, **peerp;
     ngx_stream_upstream_rr_peers_t  *peers, *backup;
 
-    /* 设置us->peer.init回调，该方法用于 */
+    /*
+     * 该函数会设置get和free方法，除此之外，也会将data字段挂载的后端服务器列表设置到
+     * s->upstream->peer.data上。该函数在构造发送往上游服务器的请求时调用.
+     */
     us->peer.init = ngx_stream_upstream_init_round_robin_peer;
 
     if (us->servers) {
@@ -46,6 +53,7 @@ ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
         n = 0;
         w = 0;
 
+        /* 遍历upstream块中的所有非备份服务器，计算非备份后端服务器总数以及总权重(以ip计数) */
         for (i = 0; i < us->servers->nelts; i++) {
             if (server[i].backup) {
                 continue;
@@ -62,37 +70,41 @@ ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
             return NGX_ERROR;
         }
 
+        /* 申请管理后端服务器列表的对象 */
         peers = ngx_pcalloc(cf->pool, sizeof(ngx_stream_upstream_rr_peers_t));
         if (peers == NULL) {
             return NGX_ERROR;
         }
 
+        /* 申请用于存放一个后端服务器信息的对象(以ip计数) */
         peer = ngx_pcalloc(cf->pool, sizeof(ngx_stream_upstream_rr_peer_t) * n);
         if (peer == NULL) {
             return NGX_ERROR;
         }
 
-        peers->single = (n == 1);
-        peers->number = n;
-        peers->weighted = (w != n);
-        peers->total_weight = w;
-        peers->name = &us->host;
+        peers->single = (n == 1);  // 判断upstream块中是否只有一个非备份服务器
+        peers->number = n;  // 设置upstream块中所有非备份服务器的总数(以ip计数)
+        peers->weighted = (w != n);  // 设置是否自定义的配置权重的标志位
+        peers->total_weight = w;  // 记录所有非备份服务器的总权重(以ip计数)
+        peers->name = &us->host;  // 记录upstream命令url参数对应的主机名
 
         n = 0;
         peerp = &peers->peer;
 
+        /* 将从配置文件中获取的非备份后端服务器信息保存到ngx_stream_upstream_rr_peer_t对象中统一管理 */
         for (i = 0; i < us->servers->nelts; i++) {
             if (server[i].backup) {
                 continue;
             }
 
+            /* 一个后端服务器可能存在多个ip地址(一个域名可能有多个冗余ip) */
             for (j = 0; j < server[i].naddrs; j++) {
                 peer[n].sockaddr = server[i].addrs[j].sockaddr;
                 peer[n].socklen = server[i].addrs[j].socklen;
                 peer[n].name = server[i].addrs[j].name;
                 peer[n].weight = server[i].weight;
-                peer[n].effective_weight = server[i].weight;
-                peer[n].current_weight = 0;
+                peer[n].effective_weight = server[i].weight;  // 初始有效权重设为配置权重
+                peer[n].current_weight = 0;  // 初始当前权重为0
                 peer[n].max_fails = server[i].max_fails;
                 peer[n].fail_timeout = server[i].fail_timeout;
                 peer[n].down = server[i].down;
@@ -104,6 +116,7 @@ ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
             }
         }
 
+        /* 将管理着非备份后端服务器列表的ngx_http_upstream_rr_peers_t对象挂载到us->peer.data中 */        
         us->peer.data = peers;
 
         /* backup servers */
@@ -167,13 +180,20 @@ ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
             }
         }
 
+        /* 将备份后端服务器组成的列表管理对象挂载到非备份后端服务器列表管理对象的next字段下 */
         peers->next = backup;
 
         return NGX_OK;
     }
 
 
-    /* an upstream implicitly defined by proxy_pass, etc. */
+    /* an upstream implicitly defined by proxy_pass, etc. *
+    /*
+     * 程序执行到这里表明没有配置upstream块，只是用proxy_pass等命令配置了一个url，用来指定
+     * 后端服务器，这个时候也会创建一个存储upstream块配置信息的结构体，只是这个结构体里面
+     * servers等信息为NULL。这个时候就需要用url参数指定的域名来解析ip地址。如果url参数对应
+     * 的域名也对应多个ip地址，那么也需要进行管理，另外，这个时候是没有备份服务器的
+     */
 
     if (us->port == 0) {
         ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
@@ -184,9 +204,11 @@ ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
 
     ngx_memzero(&u, sizeof(ngx_url_t));
 
+    /* 获取主机字符串和端口信息 */
     u.host = us->host;
     u.port = us->port;
 
+    /* 域名解析获取ip地址和主机名字 */
     if (ngx_inet_resolve_host(cf->pool, &u) != NGX_OK) {
         if (u.err) {
             ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
@@ -197,7 +219,7 @@ ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
         return NGX_ERROR;
     }
 
-    n = u.naddrs;
+    n = u.naddrs;  // 一个域名可能对应多个ip地址
 
     peers = ngx_pcalloc(cf->pool, sizeof(ngx_stream_upstream_rr_peers_t));
     if (peers == NULL) {
@@ -210,13 +232,14 @@ ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
     }
 
     peers->single = (n == 1);
-    peers->number = n;
+    peers->number = n;  // proxy_pass等命令配置的后端服务器个数(以ip计数)
     peers->weighted = 0;
     peers->total_weight = n;
     peers->name = &us->host;
 
     peerp = &peers->peer;
 
+    /* 将域名对应的多个ip地址分别用一个后端服务器信息对象进行管理 */
     for (i = 0; i < u.naddrs; i++) {
         peer[i].sockaddr = u.addrs[i].sockaddr;
         peer[i].socklen = u.addrs[i].socklen;
@@ -230,6 +253,7 @@ ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
         peerp = &peer[i].next;
     }
 
+    /* 将管理后端服务器列表的对象挂载到us->peer.data */
     us->peer.data = peers;
 
     /* implicitly defined upstream has no backup servers */
@@ -432,17 +456,28 @@ ngx_stream_upstream_get_peer(ngx_stream_upstream_rr_peer_data_t *rrp)
          peer = peer->next, i++)
     {
 
+        /* 
+         * i的值为当前遍历的后端服务器的索引，
+         * n的值为具体的某个位图，
+         * m的值为当前所遍历的后端服务器在某个位图中对应的位
+         */
         n = i / (8 * sizeof(uintptr_t));
         m = (uintptr_t) 1 << i % (8 * sizeof(uintptr_t));
 
+        /* 如果遍历到的后端服务器对应的位图已经置位，则此次不选 */
         if (rrp->tried[n] & m) {
             continue;
         }
 
+        /* 状态为down的不选 */
         if (peer->down) {
             continue;
         }
 
+        /*
+         * 如果在fail_timeout时间范围内某台服务器的连接失败次数达到了max_fails，
+         * 那么这台服务器本轮选择跳过
+         */
         if (peer->max_fails
             && peer->fails >= peer->max_fails
             && now - peer->checked <= peer->fail_timeout)
@@ -450,16 +485,19 @@ ngx_stream_upstream_get_peer(ngx_stream_upstream_rr_peer_data_t *rrp)
             continue;
         }
 
+        /* 计算本次遍历的后端服务器的当前权重 */
         peer->current_weight += peer->effective_weight;
-        total += peer->effective_weight;
+        total += peer->effective_weight;  // 累加当前可选的所有后端服务器的有效权重。
 
+        /* 更新本台后端服务器的有效权重 */
         if (peer->effective_weight < peer->weight) {
             peer->effective_weight++;
         }
 
+        /* 遍历到目前为止，选择当前权重最高的后端服务器作为best */
         if (best == NULL || peer->current_weight > best->current_weight) {
             best = peer;
-            p = i;
+            p = i;  // 记录best服务器对应的编号，后续用于记录位图用
         }
     }
 
@@ -467,15 +505,21 @@ ngx_stream_upstream_get_peer(ngx_stream_upstream_rr_peer_data_t *rrp)
         return NULL;
     }
 
+    /* 设置本次选中的最合适的后端服务器 */
     rrp->current = best;
 
+    /*
+     * 计算本台服务器所在的位图以及在位图的具体哪个位上，后续需要将对应位置位表示选中过
+     */
     n = p / (8 * sizeof(uintptr_t));
     m = (uintptr_t) 1 << p % (8 * sizeof(uintptr_t));
 
     rrp->tried[n] |= m;
 
+    /* 更新本次选中的后端服务器的当前权重 */
     best->current_weight -= total;
 
+    /* 更新一个fail_timeout周期开始的时间 */
     if (now - best->checked > best->fail_timeout) {
         best->checked = now;
     }

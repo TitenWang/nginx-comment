@@ -86,7 +86,7 @@ typedef struct {
 
     unsigned                  listen:1;
     unsigned                  uri_part:1;
-    unsigned                  no_resolve:1;
+    unsigned                  no_resolve:1;  // 不进行域名解析的标志位
     unsigned                  one_addr:1;  /* compatibility */
 
     unsigned                  no_port:1;  // url中是否带有port信息标志位

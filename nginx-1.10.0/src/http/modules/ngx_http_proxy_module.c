@@ -3683,6 +3683,20 @@ ngx_http_proxy_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     u.url.data = url->data + add;
     u.default_port = port;
     u.uri_part = 1;
+    /*
+     * 表示该url不进行域名解析，为什么不需要进行域名解析呢?这个需要分情况讨论。
+     * 1、如果在配置文件中既配置了upstream块，且又proxy_pass指令，且两个指令后面跟
+     * 的第一个参数一样的话，那么这个时候就不需要进行域名解析，这种情况这个参数
+     * 名字一般都是内部指定的，没有必要进行域名解析，只要能匹配就行。
+     * 2、那如果是只配置了proxy_pass指令，没有配置名字匹配的upstream块的时候，这个
+     * 时候其实是需要进行域名解析的，但是不是在获取upstream配置信息结构体的时候，
+     * 而是在初始化负载均衡的后端服务器列表时候，在初始化负载均衡的时候如果发现
+     * ngx_http_upstream_srv_conf_t中的servers为NULL，表明是没有配置对应的upstream块，
+     * 这个时候就只能用proxy_pass后面的url信息去做域名解析获取后端服务器的信息。这部分
+     * 见ngx_http_upstream_init_round_robin()
+     * 为什么需要这样设计呢?因为proxy_pass和upstream配置块出现的先后顺序不固定，所以
+     * 用这种方式进行处理，这也是配置文件灵活的一种折中方案
+     */
     u.no_resolve = 1;
 
     plcf->upstream.upstream = ngx_http_upstream_add(cf, &u, 0);

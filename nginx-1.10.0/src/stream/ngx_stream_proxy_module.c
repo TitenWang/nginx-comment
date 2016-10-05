@@ -18,6 +18,10 @@ typedef struct {
     size_t                           upload_rate;
     size_t                           download_rate;
     ngx_uint_t                       responses;
+    /*
+     * next_upstream_tries表示当nginx与其中一台后端服务器建链失败或者处理请求失败时，
+     * nginx可以尝试和其他后端服务器重新建链的次数
+     */
     ngx_uint_t                       next_upstream_tries;
     ngx_flag_t                       next_upstream;
     ngx_flag_t                       proxy_protocol;
@@ -378,6 +382,10 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
 
     u->peer.start_time = ngx_current_msec;
 
+    /*
+     * pscf->next_upstream_tries表示当nginx与其中一台后端服务器建链失败或者处理请求失败时，
+     * nginx可以尝试和其他后端服务器重新建链的次数
+     */
     if (pscf->next_upstream_tries
         && u->peer.tries > pscf->next_upstream_tries)
     {
@@ -1410,7 +1418,10 @@ ngx_stream_proxy_next_upstream(ngx_stream_session_t *s)
 
     timeout = pscf->next_upstream_timeout;
 
-    /* 如果可重试次数已经为0或者选择下一台后端服务器的时间也超时了，就需要结束请求，关闭连接了 */
+    /*
+     * 如果可重试次数已经为0或者选择下一台后端服务器的时间也超时了，或者允许向下一台
+     * 后端服务器再次发送建链请求的开关没开，就需要结束请求，关闭连接了
+     */
     if (u->peer.tries == 0
         || !pscf->next_upstream
         || (timeout && ngx_current_msec - u->peer.start_time >= timeout))
@@ -1753,6 +1764,20 @@ ngx_stream_proxy_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_memzero(&u, sizeof(ngx_url_t));
 
     u.url = *url;
+    /*
+     * 表示该url不进行域名解析，为什么不需要进行域名解析呢?这个需要分情况讨论。
+     * 1、如果在配置文件中既配置了upstream块，且又proxy_pass指令，且两个指令后面跟
+     * 的第一个参数一样的话，那么这个时候就不需要进行域名解析，这种情况这个参数
+     * 名字一般都是内部指定的，没有必要进行域名解析，只要能匹配就行。
+     * 2、那如果是只配置了proxy_pass指令，没有配置名字匹配的upstream块的时候，这个
+     * 时候其实是需要进行域名解析的，但是不是在获取upstream配置信息结构体的时候，
+     * 而是在初始化负载均衡的后端服务器列表时候，在初始化负载均衡的时候如果发现
+     * ngx_stream_upstream_srv_conf_t中的servers为NULL，表明是没有配置对应的upstream块，
+     * 这个时候就只能用proxy_pass后面的url信息去做域名解析获取后端服务器的信息。这部分
+     * 见ngx_stream_upstream_init_round_robin()
+     * 为什么需要这样设计呢?因为proxy_pass和upstream配置块出现的先后顺序不固定，所以
+     * 用这种方式进行处理，这也是配置文件灵活的一种折中方案
+     */
     u.no_resolve = 1;
 
     /* 获取proxy_pass命令参数对应的upstream配置块信息 */

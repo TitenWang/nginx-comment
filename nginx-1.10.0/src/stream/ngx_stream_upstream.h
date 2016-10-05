@@ -82,10 +82,10 @@ struct ngx_stream_upstream_srv_conf_s {
 
     ngx_uint_t                         flags;  // upstream块内支持出现的功能参数，如backup、fail_timeout等
     ngx_str_t                          host;  // upstream指令后面跟的host名字
-    u_char                            *file_name;
-    ngx_uint_t                         line;
-    in_port_t                          port;
-    ngx_uint_t                         no_port;  /* unsigned no_port:1 */
+    u_char                            *file_name;  // 配置文件名字
+    ngx_uint_t                         line;  // 命令在配置文件中的行号
+    in_port_t                          port;  // port端口信息
+    ngx_uint_t                         no_port;  /* unsigned no_port:1 */ /* url中是否有端口信息 */
 
 #if (NGX_STREAM_UPSTREAM_ZONE)
     ngx_shm_zone_t                    *shm_zone;

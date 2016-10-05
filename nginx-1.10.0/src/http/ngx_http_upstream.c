@@ -5989,8 +5989,8 @@ ngx_http_upstream(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
     /* upstream配置指令后面也需要指定一个host名字，是upstream指令的第一个参数 */
     value = cf->args->elts;
     u.host = value[1];
-    u.no_resolve = 1;
-    u.no_port = 1;
+    u.no_resolve = 1;// 不进行域名解析，因为upstream后面跟的名字一般都是内部指定的，所以没必要域名解析
+    u.no_port = 1;// 不带有port信息，因为upstream后面跟的名字一般都是内部指定的，所以都不带端口信息
 
     /* 获取一个用于存储upstream块信息的结构体，其挂载在ngx_http_upstream_main_conf_t中的upstreams字段 */
     uscf = ngx_http_upstream_add(cf, &u, NGX_HTTP_UPSTREAM_CREATE

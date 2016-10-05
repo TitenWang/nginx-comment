@@ -81,9 +81,9 @@ ngx_stream_upstream(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
     ngx_memzero(&u, sizeof(ngx_url_t));
 
     value = cf->args->elts;
-    u.host = value[1];
-    u.no_resolve = 1;
-    u.no_port = 1;
+    u.host = value[1];  // upstream命令第一个参数是主机名而不是完整的url
+    u.no_resolve = 1;  // 不进行域名解析，因为upstream后面跟的名字一般都是内部指定的，所以没必要域名解析
+    u.no_port = 1;  // 不带有port信息，因为upstream后面跟的名字一般都是内部指定的，所以都不带端口信息
 
     /*
      * 因为是解析到一个upstream块，所以需要以所有的flags调用ngx_stream_upstream_add。那什么情况下
@@ -325,7 +325,7 @@ not_supported:
     return NGX_CONF_ERROR;
 }
 
-
+/* 获取一个存储upstream块配置信息的结构体 */
 ngx_stream_upstream_srv_conf_t *
 ngx_stream_upstream_add(ngx_conf_t *cf, ngx_url_t *u, ngx_uint_t flags)
 {
@@ -334,6 +334,14 @@ ngx_stream_upstream_add(ngx_conf_t *cf, ngx_url_t *u, ngx_uint_t flags)
     ngx_stream_upstream_srv_conf_t   *uscf, **uscfp;
     ngx_stream_upstream_main_conf_t  *umcf;
 
+    /*
+     * 如果flags里面不包含NGX_STREAM_UPSTREAM_CREATE标志位，则说明并不是在配置文件中解析到upstream
+     * 块时调用这个函数，而是在解析到proxy_pass命令时调用的，这个时候是用相应的url参数来匹配解析
+     * upstream块的时候创建的那个结构体。但是如果这个时候还没有解析到upstream块呢?则也会创建一个
+     * 对应的用来存储upstream配置信息的结构体，只是这个时候里面的很多信息没有初始化，等真正解析
+     * 到upstream配置块的时候，会以包含NGX_STREAM_UPSTREAM_CREATE位的flags来调用该函数，那个时候
+     * 就可以索引出此次创建的结构体。
+     */
     if (!(flags & NGX_STREAM_UPSTREAM_CREATE)) {
 
         if (ngx_parse_url(cf->pool, u) != NGX_OK) {
@@ -346,10 +354,18 @@ ngx_stream_upstream_add(ngx_conf_t *cf, ngx_url_t *u, ngx_uint_t flags)
         }
     }
 
+    /*
+     * 获取ngx_stream_upstream_module的main级别配置结构体，里面包含了stream块内
+     * 所有upstream块的配置信息结构体
+     */
     umcf = ngx_stream_conf_get_module_main_conf(cf, ngx_stream_upstream_module);
 
     uscfp = umcf->upstreams.elts;
 
+    /* 
+     * 遍历stream配置块内所有的upstream配置块，匹配是否之前已经创建过用来存储
+     * upstream块配置信息的结构体 
+     */
     for (i = 0; i < umcf->upstreams.nelts; i++) {
 
         if (uscfp[i]->host.len != u->host.len
@@ -393,6 +409,7 @@ ngx_stream_upstream_add(ngx_conf_t *cf, ngx_url_t *u, ngx_uint_t flags)
         return uscfp[i];
     }
 
+    /* 程序执行到这里表明需要重新创建一个存储upstream配置块信息的结构体 */
     uscf = ngx_pcalloc(cf->pool, sizeof(ngx_stream_upstream_srv_conf_t));
     if (uscf == NULL) {
         return NULL;
@@ -405,6 +422,7 @@ ngx_stream_upstream_add(ngx_conf_t *cf, ngx_url_t *u, ngx_uint_t flags)
     uscf->port = u->port;
     uscf->no_port = u->no_port;
 
+    /* u->naddrs == 1成立的话表明该域名只对应一个ip地址 */
     if (u->naddrs == 1 && (u->port || u->family == AF_UNIX)) {
         uscf->servers = ngx_array_create(cf->pool, 1,
                                          sizeof(ngx_stream_upstream_server_t));
@@ -480,6 +498,10 @@ ngx_stream_upstream_init_main_conf(ngx_conf_t *cf, void *conf)
                                          ? uscfp[i]->peer.init_upstream
                                          : ngx_stream_upstream_init_round_robin;
 
+        /*
+         * 调用uscfp[i]->peer.init_upstream初始化负载均衡，主要就是利用解析配置文件
+         * 得到的server信息来构造后端服务器列表。
+         */
         if (init(cf, uscfp[i]) != NGX_OK) {
             return NGX_CONF_ERROR;
         }
