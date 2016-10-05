@@ -11,8 +11,9 @@
 
 
 typedef struct {
-    in_addr_t         mask;
-    in_addr_t         addr;
+    in_addr_t         mask;  // 掩码地址
+    in_addr_t         addr;  // ip地址
+    /* 因为这个结构体是allow和deny共用，所以需要一个标志位来区分两者 */
     ngx_uint_t        deny;      /* unsigned  deny:1; */
 } ngx_stream_access_rule_t;
 
@@ -113,7 +114,7 @@ ngx_module_t  ngx_stream_access_module = {
     NGX_MODULE_V1_PADDING
 };
 
-
+/* access模块处理函数 */
 static ngx_int_t
 ngx_stream_access_handler(ngx_stream_session_t *s)
 {
@@ -127,10 +128,13 @@ ngx_stream_access_handler(ngx_stream_session_t *s)
 
     ascf = ngx_stream_get_module_srv_conf(s, ngx_stream_access_module);
 
+    /* 判断nginx与客户端之间的连接的协议族 */
     switch (s->connection->sockaddr->sa_family) {
 
     case AF_INET:
+        /* ascf->rules不为空说明在配置文件中配置了access规则 */
         if (ascf->rules) {
+            /* 获取客户端地址信息 */
             sin = (struct sockaddr_in *) s->connection->sockaddr;
             return ngx_stream_access_inet(s, ascf, sin->sin_addr.s_addr);
         }
@@ -181,6 +185,7 @@ ngx_stream_access_inet(ngx_stream_session_t *s,
     ngx_uint_t                 i;
     ngx_stream_access_rule_t  *rule;
 
+    /* 遍历解析配置文件时得到的规则动态数组，看addr是否在规则之中 */
     rule = ascf->rules->elts;
     for (i = 0; i < ascf->rules->nelts; i++) {
 
@@ -188,11 +193,13 @@ ngx_stream_access_inet(ngx_stream_session_t *s,
                        "access: %08XD %08XD %08XD",
                        addr, rule[i].mask, rule[i].addr);
 
+        /* 如果在规则数组中找到了对应的ip地址，则需要进一步处理 */
         if ((addr & rule[i].mask) == rule[i].addr) {
             return ngx_stream_access_found(s, rule[i].deny);
         }
     }
 
+    /* 如果客户端ip地址不在规则数组中，则返回NGX_DECLINED，主流程往下继续执行 */
     return NGX_DECLINED;
 }
 
@@ -271,16 +278,18 @@ ngx_stream_access_unix(ngx_stream_session_t *s,
 static ngx_int_t
 ngx_stream_access_found(ngx_stream_session_t *s, ngx_uint_t deny)
 {
+    /* 如果是deny的话，则返回NGX_ABORT，表明当前ip不允许访问 */
     if (deny) {
         ngx_log_error(NGX_LOG_ERR, s->connection->log, 0,
                       "access forbidden by rule");
         return NGX_ABORT;
     }
 
+    /* 如果是allow，则返回NGX_OK，表明当前ip允许访问 */
     return NGX_OK;
 }
 
-
+/* allow和deny命令解析函数 */
 static char *
 ngx_stream_access_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -302,6 +311,7 @@ ngx_stream_access_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     value = cf->args->elts;
 
+    /* 判断allow参数是不是"all"，如果是的话则all为1 */
     all = (value[1].len == 3 && ngx_strcmp(value[1].data, "all") == 0);
 
     if (!all) {
@@ -317,7 +327,7 @@ ngx_stream_access_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
 
 #else
-        rc = ngx_ptocidr(&value[1], &cidr);
+        rc = ngx_ptocidr(&value[1], &cidr); // 计算ip地址和掩码
 #endif
 
         if (rc == NGX_ERROR) {
@@ -332,8 +342,10 @@ ngx_stream_access_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
     }
 
+    /* ipv4 */
     if (cidr.family == AF_INET || all) {
 
+        /* 创建存储可访问和禁止访问规则的动态数组 */
         if (ascf->rules == NULL) {
             ascf->rules = ngx_array_create(cf->pool, 4,
                                            sizeof(ngx_stream_access_rule_t));
@@ -342,11 +354,13 @@ ngx_stream_access_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             }
         }
 
+        /* 从动态数组中申请一个元素 */
         rule = ngx_array_push(ascf->rules);
         if (rule == NULL) {
             return NGX_CONF_ERROR;
         }
 
+        /* 将allow或deny中配置的ip信息记录下来 */
         rule->mask = cidr.u.in.mask;
         rule->addr = cidr.u.in.addr;
         rule->deny = (value[0].data[0] == 'd') ? 1 : 0;
@@ -438,13 +452,14 @@ ngx_stream_access_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
     return NGX_CONF_OK;
 }
 
-
+/* 解析完stream块内所有配置项之后回调 */
 static ngx_int_t
 ngx_stream_access_init(ngx_conf_t *cf)
 {
     ngx_stream_core_main_conf_t  *cmcf;
 
     cmcf = ngx_stream_conf_get_module_main_conf(cf, ngx_stream_core_module);
+    /* 注册access_handler */
     cmcf->access_handler = ngx_stream_access_handler;
 
     return NGX_OK;

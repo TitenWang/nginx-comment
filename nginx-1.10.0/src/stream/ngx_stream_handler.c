@@ -177,6 +177,7 @@ ngx_stream_init_connection(ngx_connection_t *c)
         }
     }
 
+    /* 如果配置了access模块命令，则进行准入判断，如果禁止访问，则结束请求 */
     if (cmcf->access_handler) {
         rc = cmcf->access_handler(s);
 

@@ -128,8 +128,8 @@ typedef struct {
 
     /* 存放的是stream块内所有server块内出现的listen指令的参数，一个listen对应其中的一个元素 */
     ngx_array_t             listen;      /* ngx_stream_listen_t */
-    ngx_stream_access_pt    limit_conn_handler;
-    ngx_stream_access_pt    access_handler;
+    ngx_stream_access_pt    limit_conn_handler;  // stream limit conn模块注册的处理函数
+    ngx_stream_access_pt    access_handler;  // stream access模块注册的处理函数
 } ngx_stream_core_main_conf_t;
 
 
@@ -155,21 +155,31 @@ struct ngx_stream_session_s {
 
     ngx_log_handler_pt      log_handler;
 
-    void                  **ctx;
-    void                  **main_conf;
-    void                  **srv_conf;
+    void                  **ctx;  // 模块上下文
+    void                  **main_conf;  // stream块中所有stream模块生成的配置项结构体数组
+    void                  **srv_conf;  // 请求匹配的server块中所有stream模块生成的配置项结构体数组
 
     ngx_stream_upstream_t  *upstream;  // upstream对象
 };
 
 
 typedef struct {
+    /* 解析完stream块内的所有配置项之后回调 */
     ngx_int_t             (*postconfiguration)(ngx_conf_t *cf);
 
+    /*
+     * 创建用于存储stream模块的main级别配置项的结构体
+     */
     void                 *(*create_main_conf)(ngx_conf_t *cf);
+    /* 解析完main级别配置项之后回调 */
     char                 *(*init_main_conf)(ngx_conf_t *cf, void *conf);
 
+    /* 创建用于存储stream模块srv级别配置项的结构体 */
     void                 *(*create_srv_conf)(ngx_conf_t *cf);
+    /*
+     * create_srv_conf创建的结构体所要存储的配置项可能同时出现在main、srv中。
+     * merge_srv_conf方法可以把出现在main级别中的配置项值合并到srv级别配置项中
+     */
     char                 *(*merge_srv_conf)(ngx_conf_t *cf, void *prev,
                                             void *conf);
 } ngx_stream_module_t;

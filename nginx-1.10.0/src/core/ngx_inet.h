@@ -41,8 +41,8 @@
 
 
 typedef struct {
-    in_addr_t                 addr;
-    in_addr_t                 mask;
+    in_addr_t                 addr;  // ip地址
+    in_addr_t                 mask;  // 掩码
 } ngx_in_cidr_t;
 
 
@@ -57,7 +57,7 @@ typedef struct {
 
 
 typedef struct {
-    ngx_uint_t                family;
+    ngx_uint_t                family;  // 协议族，ipv4、ipv6 
     union {
         ngx_in_cidr_t         in;
 #if (NGX_HAVE_INET6)

@@ -364,7 +364,7 @@ ngx_inet6_ntop(u_char *p, u_char *text, size_t len)
 
 #endif
 
-
+/* 解析ip地址和掩码 */
 ngx_int_t
 ngx_ptocidr(ngx_str_t *text, ngx_cidr_t *cidr)
 {
@@ -375,18 +375,21 @@ ngx_ptocidr(ngx_str_t *text, ngx_cidr_t *cidr)
     ngx_int_t    rc;
     ngx_uint_t   s, i;
 #endif
-
+    /* 获取ip地址数据 */
     addr = text->data;
     last = addr + text->len;
 
+    /* 判断ip地址形式是不是x.x.x.x/y */
     mask = ngx_strlchr(addr, last, '/');
     len = (mask ? mask : last) - addr;
 
+    /* 尝试将ip地址转换为in_addr_t形式 */
     cidr->u.in.addr = ngx_inet_addr(addr, len);
 
     if (cidr->u.in.addr != INADDR_NONE) {
         cidr->family = AF_INET;
 
+        /* 地址数据中没有指定掩码，则使用默认掩码0xffffffff */
         if (mask == NULL) {
             cidr->u.in.mask = 0xffffffff;
             return NGX_OK;
@@ -406,8 +409,10 @@ ngx_ptocidr(ngx_str_t *text, ngx_cidr_t *cidr)
         return NGX_ERROR;
     }
 
+    /* mask++后mask指向字符串形式掩码数据开始 */
     mask++;
 
+    /* 将字符串形式的掩码数据转换为数字 */
     shift = ngx_atoi(mask, last - mask);
     if (shift == NGX_ERROR) {
         return NGX_ERROR;
@@ -446,6 +451,7 @@ ngx_ptocidr(ngx_str_t *text, ngx_cidr_t *cidr)
             return NGX_ERROR;
         }
 
+        /* 利用计算出来的掩码长度计算掩码地址 */
         if (shift) {
             cidr->u.in.mask = htonl((uint32_t) (0xffffffffu << (32 - shift)));
 
@@ -454,6 +460,8 @@ ngx_ptocidr(ngx_str_t *text, ngx_cidr_t *cidr)
             cidr->u.in.mask = 0;
         }
 
+        /* 利用计算出来的掩码地址求出ip地址 */
+        
         if (cidr->u.in.addr == (cidr->u.in.addr & cidr->u.in.mask)) {
             return NGX_OK;
         }
