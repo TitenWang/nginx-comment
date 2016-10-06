@@ -1,4 +1,4 @@
-#define NGX_CONFIGURE " --with-ipv6 --with-http_ssl_module --with-http_v2_module --with-http_realip_module --with-pcre --with-http_stub_status_module --with-http_addition_module"
+#define NGX_CONFIGURE " --with-ipv6 --with-http_ssl_module --with-http_v2_module --with-http_realip_module --with-pcre --with-http_stub_status_module --with-http_addition_module --with-stream"
 
 #ifndef NGX_COMPILER
 #define NGX_COMPILER  "gcc 5.2.1 20151010 (Ubuntu 5.2.1-22ubuntu2) "
@@ -375,6 +375,11 @@
 
 #ifndef NGX_STAT_STUB
 #define NGX_STAT_STUB  1
+#endif
+
+
+#ifndef NGX_STREAM_UPSTREAM_ZONE
+#define NGX_STREAM_UPSTREAM_ZONE  1
 #endif
 
 
