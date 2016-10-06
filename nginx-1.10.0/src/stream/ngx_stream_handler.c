@@ -168,6 +168,7 @@ ngx_stream_init_connection(ngx_connection_t *c)
 
     cmcf = ngx_stream_get_module_main_conf(s, ngx_stream_core_module);
 
+    /* 如果注册了ngx_stream_limit_conn_module模块的处理方法，则会对来自同一个ip的并发连接数进行限制 */
     if (cmcf->limit_conn_handler) {
         rc = cmcf->limit_conn_handler(s);
 
