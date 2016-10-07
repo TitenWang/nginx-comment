@@ -22,18 +22,18 @@ typedef struct ngx_stream_upstream_rr_peer_s   ngx_stream_upstream_rr_peer_t;
  */
 
 struct ngx_stream_upstream_rr_peer_s {
-    struct sockaddr                 *sockaddr;
+    struct sockaddr                 *sockaddr;  // 后端服务器ip和port信息
     socklen_t                        socklen;
     ngx_str_t                        name;
     ngx_str_t                        server;
 
-    ngx_int_t                        current_weight;
-    ngx_int_t                        effective_weight;
-    ngx_int_t                        weight;
+    ngx_int_t                        current_weight;  // 当前权重
+    ngx_int_t                        effective_weight;  // 有效权重
+    ngx_int_t                        weight;  // 配置权重
 
-    ngx_uint_t                       conns;
+    ngx_uint_t                       conns;  // 记录此后端服务器选中的次数
 
-    ngx_uint_t                       fails;
+    ngx_uint_t                       fails;  // 失败次数
     time_t                           accessed;
     time_t                           checked;
 
