@@ -311,6 +311,22 @@ ngx_http_upstream_init_round_robin_peer(ngx_http_request_t *r,
      * rrp->peers就是用来管理后端服务器列表的对象，在这里设置为us->peer.data，
      * us->peer.data在函数ngx_http_upstream_init_round_robin中构造。
      */
+    /*
+     *     将后端服务器列表挂载到peers字段中。对于不同的客户端请求，函数
+     * ngx_http_upstream_init_round_robin_peer()都会被调用一次，r->upstream->peer.data
+     * 也会被重新创建，但是构造us->peer.data后端服务器列表信息的函数只会在配置文件解析完main级别
+     * 配置项之后调用一次，之后不会再调用(函数为:ngx_http_upstream_init_round_robin)。
+     *     rrp->peers = us->peer.data;这条赋值语句表明对于不同的客户端请求，他们所使用的后端服务器
+     * 列表信息是同一份的，也就是说先来的客户端请求会对后来的客户端请求如何选择后端服务器有影响。
+     * 举个例子，假如有两个客户端连接，第一个客户端连接选择了其中一台后端服务器，那么就会更新这一台
+     * 后端服务器的一些信息，比如当前权重，被选中次数及有效权重等信息到后端服务器列表中的对应位置，
+     * 这些都会对后续第二个客户端请求有影响，因为不同的客户端请求之间所使用的后端服务器列表信息是同一份。
+     *     但是下面用来指示后端服务器是否被选中的位图是每个请求都会创建一份，也就是说位图在不同的客户端
+     * 请求之间是不共用的。比如对于同一台后端服务器，在第一个客户端请求的时候被选中了，它的权重信息被
+     * 第一个请求处理更新了，位图中对应位置也被置位了。此时来了第二个客户端请求，由于这台后端服务器权重
+     * 信息被第一个请求更新过，所以会影响第二个客户端请求的选择，但是在第二个请求中对应该后端服务器的
+     * 位图中的位是没有被置位的。因为位图是每个请求独有的。
+     */
     rrp->peers = us->peer.data;
     rrp->current = NULL;
 
@@ -737,7 +753,17 @@ ngx_http_upstream_get_peer(ngx_http_upstream_rr_peer_data_t *rrp)
      */
     best->current_weight -= total;
 
-    /* 更新一个fail_timeout周期开始的时间 */
+    /*
+     *     如果现在距离这台服务器上次被选中但处理失败的时间(这台服务器此前在fail_timeout内处理失败次数大于
+     * max_fails次而不参与选举)大于fail_timeout，则说明这台服务器又可以重新参与连接了，本台后端服务器此次
+     * 被选中，更新checked。如果本台服务器后续连接处理也成功了，这个时候会在ngx_stream_upstream_free_round_robin_peer
+     * 函数中将fails次数清零，激活这台服务器(因为这个时候checked肯定不等于accessed)。如果本台服务器后续连接
+     * 处理又失败了，那么accessed和checked时间又会被更新为出异常时间，这样的话本台服务器的fails次数在原来
+     * max_fails基础上又被递增了。下一个客户端请求来的时候就可能会因为now - best->checked小于fail_timeout
+     * 会不选这台服务器，对于处于这种状态的服务器，只有过了fail_timeout时间被选中并且后续处理也成功，才有
+     * 机会被激活(fails清零)，否则每次都只能等fail_timeout过了，才会参与选举，如果选举成功但是后续处理失败，
+     * 又只能等fail_timeout过了再参与选举(上面498行的判断由fail_timeout和fails同时制约)，以此类推。
+     */
     if (now - best->checked > best->fail_timeout) {
         best->checked = now;
     }
@@ -820,6 +846,19 @@ ngx_http_upstream_free_round_robin_peer(ngx_peer_connection_t *pc, void *data,
         /* mark peer live if check passed */
 
         /* 程序执行到这里表明此台服务器是可以成功连接的，因此将其之前累计的连接失败次数清零 */
+        /*
+         * 从上面那个if分支可以看出，只要后端服务器被选中但是后续处理过程中失败了，那么checked和accessed
+         * 的时间总是一样的，那什么时候accessed和checked会不一样呢?我们知道accessed记录的是最近一次检测到
+         * 后端服务器异常的时间点，checked什么时候会被单独更新呢?
+         * 如果某台服务器(这台服务器此前在fail_timeout内处理失败次数大于max_fails次而不参与选举)过了fail_timeout后
+         * 重新参与连接并被被选中，更新checked。如果本台服务器后续连接处理也成功了(会执行到这里)，这个时候会
+         * 将fails次数清零，激活这台服务器(因为这个时候checked肯定不等于accessed)。如果本台服务器后续连接
+         * 处理又失败了，那么accessed和checked时间又会被更新为出异常时间(上面的if分支)，这样的话本台服务器的
+         * fails次数在原来max_fails基础上又被递增了。下一个客户端请求来的时候就可能会因为now - best->checked
+         * 小于fail_timeout会不选这台服务器，对于处于这种状态的服务器，只有过了fail_timeout时间被选中并且后续
+         * 处理也成功，才有机会被激活(fails清零)，否则每次都只能等fail_timeout过了，才会参与选举，如果选举成功
+         * 但是后续处理失败，又只能等fail_timeout过了再参与选举，以此类推。
+         */
         if (peer->accessed < peer->checked) {
             peer->fails = 0;
         }

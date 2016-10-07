@@ -33,7 +33,24 @@ struct ngx_http_upstream_rr_peer_s {
     ngx_uint_t                      conns;  // 记录此后端服务器选中的次数
 
     ngx_uint_t                      fails;  // 在fail_timeout时间内失败的次数
+    
+    /* 选取的后端服务器异常则更新accessed时间为当前选取后端服务器的时候检测到异常的时间 */
     time_t                          accessed;
+
+    /*
+     *     fail_timeout时间内访问后端服务器出现错误的次数大于等于max_fails，则认为该服务器不可用，
+     * 那么如果不可用了，后端该服务器又恢复了怎么判断检测呢?
+     *     答:checked用来检测时间，例如某个时间段fail_timeout这段时间后端失效了，当这个fail_timeout
+     * 时间段过了后，会重置peer->checked，那么又可以试探该服务器了，
+
+     * 1）如果server的失败次数（peers->peer[i].fails）没有达到了max_fails所设置的最大失败次数，
+     * 则该server是有效的。
+     * 2）如果server已经达到了max_fails所设置的最大失败次数，从这一时刻开始算起，在fail_timeout 
+     * 所设置的时间段内， server是无效的。
+     * 3）当server的失败次数（peers->peer[i].fails）为最大的失败次数，当距离现在的时间(最近一次
+     * 选举该服务器失败)超过了fail_timeout 所设置的时间段， 则令peers->peer[i].fails =0，使得
+     * 该server重新有效。
+     */
     time_t                          checked;  // 标志一个fail_timeout周期开始的时间
 
     ngx_uint_t                      max_fails;  // 配置文件中获取
