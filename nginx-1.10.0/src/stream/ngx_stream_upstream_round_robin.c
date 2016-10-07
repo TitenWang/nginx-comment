@@ -437,6 +437,12 @@ failed:
 
     /* all peers failed, mark them as live for quick recovery */
 
+    /*
+     * 程序执行到这里表明upstream块中的所有server都是不可用的(包括备份和非备份)，对于此次选择后端
+     * 服务器的请求，则会选择失败，返回NGX_BUSY。这个时候就需要将所有的后端服务器(包括备份和非备份，
+     * 备份服务器会在第二层嵌套调用该函数自身的时候执行下面的操作的清零操作)的peer->fails记录的失败
+     * 次数清零，将所有服务器恢复到初始状态，激活所有的后端服务器，防止后面的请求也会返回NGX_BUSY
+     */
     for (peer = peers->peer; peer; peer = peer->next) {
         peer->fails = 0;
     }
@@ -599,6 +605,20 @@ ngx_stream_upstream_free_round_robin_peer(ngx_peer_connection_t *pc, void *data,
             peer->effective_weight -= peer->weight / peer->max_fails;  // 更新有效权重
 
             /* 如果失败次数大于max_fails，则该台服务器暂时需要停止提供服务 */
+            /*
+             * 如果本台服务器的重连次数已经达到了在规定时间内允许失败的最大次数，
+             * 那么这台服务器就只能暂时不提供服务了，后续再选择的时候，由于
+             * peer->fails和now - peer->checked <= peer->fail_timeout不满足而不被选中，
+             * 这个从ngx_http_upstream_get_peer中可以看到。
+             * 并且由于peer->fails没有清零，只能等到now - peer->checked > fail_timeout
+             * 时，也就是现在距离最近一次被选中但后续处理失败的时间过了fail_timeout这个
+             * 时间范围后，才能重新参与选择，如果重新参与选择，被选中的话，checked被更新
+             * 并且后续如果处理成功，那么就会走下面那个else分支，由于accessed小于checked，
+             * 那么就会将这台服务器的fails清零，激活这台服务器。但是如果重新参与选择，也
+             * 被选中，checked被更新，但是后续处理不成功，那么由于fails没有被清零，则又会
+             * 进入到这个分支，后续这台服务器又会暂时停止服务，等过了fail_timeout后才能
+             * 重新参与选择，以此类推。
+             */
             if (peer->fails >= peer->max_fails) {
                 ngx_log_error(NGX_LOG_WARN, pc->log, 0,
                               "upstream server temporarily disabled");
