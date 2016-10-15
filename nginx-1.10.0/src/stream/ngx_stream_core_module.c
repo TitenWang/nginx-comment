@@ -302,6 +302,10 @@ ngx_stream_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     /*
      * 遍历已经解析到的listen命令，但本次解析到的是否和之前已经解析过的listen命令一样，
      * 如果一样的话，这样是不允许的，因为不允许两个server块内同时监听同一个ip:port.
+     * 在这个版本中采用的是"port != u.port"，不知道为什么用主机序和网络序的比较。
+     * 这样比较是不能实现一个ip:port只能被一个server监听的，除非一个port的网络序和主机序相等。
+     * 在最新版本中修改了比较方式，即用同一种字节序的进行比较，这样可以保证同一个ip:port
+     * 不会被两个server块同时监听。
      */
     for (i = 0; i < cmcf->listen.nelts; i++) {
 
@@ -344,6 +348,10 @@ ngx_stream_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        /*
+         * 主机序和网络序进行比较，感觉实现有点不大对。查看了最新版本，在最新版本中已经修改了
+         * 比较方式，即用同一种字节序的port进行比较。
+         */
         if (port != u.port) {
             continue;
         }
