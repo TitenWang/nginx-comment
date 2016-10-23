@@ -43,14 +43,14 @@ static ngx_command_t  ngx_errlog_commands[] = {
       ngx_null_command
 };
 
-
+/* ngx_errlog_module模块对应的核心模块配置信息 */
 static ngx_core_module_t  ngx_errlog_module_ctx = {
     ngx_string("errlog"),
     NULL,
     NULL
 };
 
-
+/* ngx_errlog_module模块的ngx_module_t对象信息 */
 ngx_module_t  ngx_errlog_module = {
     NGX_MODULE_V1,
     &ngx_errlog_module_ctx,                /* module context */
@@ -71,7 +71,7 @@ static ngx_log_t        ngx_log;
 static ngx_open_file_t  ngx_log_file;
 ngx_uint_t              ngx_use_stderr = 1;
 
-
+/* Nginx支持的日志级别对应的描述字符串 */
 static ngx_str_t err_levels[] = {
     ngx_null_string,
     ngx_string("emerg"),
@@ -84,6 +84,7 @@ static ngx_str_t err_levels[] = {
     ngx_string("debug")
 };
 
+/* debug日志级别 */
 static const char *debug_levels[] = {
     "debug_core", "debug_alloc", "debug_mutex", "debug_event",
     "debug_http", "debug_mail", "debug_stream"
@@ -114,21 +115,27 @@ ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
 
     last = errstr + NGX_MAX_ERROR_STR;
 
+    /* 1. 往缓冲区中写入时间信息 */
     p = ngx_cpymem(errstr, ngx_cached_err_log_time.data,
                    ngx_cached_err_log_time.len);
 
+    /* 2. 往缓冲区中写入日志级别 */
     p = ngx_slprintf(p, last, " [%V] ", &err_levels[level]);
 
+    /* 3. 往缓冲区中写入进程id信息 */
     /* pid#tid */
     p = ngx_slprintf(p, last, "%P#" NGX_TID_T_FMT ": ",
                     ngx_log_pid, ngx_log_tid);
 
+    /* 4. 往缓冲区中写入connection */
     if (log->connection) {
         p = ngx_slprintf(p, last, "*%uA ", log->connection);
     }
 
     msg = p;
 
+    /* 5. 往缓冲区中写入格式化信息 */
+    
 #if (NGX_HAVE_VARIADIC_MACROS)
 
     va_start(args, fmt);
@@ -141,10 +148,12 @@ ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
 
 #endif
 
+    /* 6. 往缓冲区中写入错误码及其对应的描述字符串 */
     if (err) {
         p = ngx_log_errno(p, last, err);
     }
 
+    /* 7. 往缓冲区中写入子系统相关的信息 */
     if (level != NGX_LOG_DEBUG && log->handler) {
         p = log->handler(log, p, last - p);
     }
@@ -158,12 +167,18 @@ ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
     wrote_stderr = 0;
     debug_connection = (log->log_level & NGX_LOG_DEBUG_CONNECTION) != 0;
 
+    /* 遍历ngx_log_t对象组成的链表，寻找匹配的日志对象 */
     while (log) {
 
+        /*
+         * 因为日志对象链表是按照日志级别由低到高进行存储的，所以对于当前遍历到的日志对象，
+         * 如果此次打印的日志级别高于它的话，那么继续往后遍历链表也不可能找到匹配的级别，所以break。
+         */
         if (log->log_level < level && !debug_connection) {
             break;
         }
 
+        /* 如果日志对象设置了writer回调，则调用该回调函数，然后继续遍历下一个日志对象 */
         if (log->writer) {
             log->writer(log, level, errstr, p - errstr);
             goto next;
@@ -180,12 +195,14 @@ ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
             goto next;
         }
 
+        /* 将缓冲区信息写入到对应的文件中 */
         n = ngx_write_fd(log->file->fd, errstr, p - errstr);
 
         if (n == -1 && ngx_errno == NGX_ENOSPC) {
             log->disk_full_time = ngx_time();
         }
 
+        /* 如果log->file->fd是ngx_stderr，则将wrote_stderr置位 */
         if (log->file->fd == ngx_stderr) {
             wrote_stderr = 1;
         }
@@ -195,6 +212,7 @@ ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
         log = log->next;
     }
 
+    /* 如果不打印到标准错误输出，或者已经打印到标准错误输出了，那么直接返回 */
     if (!ngx_use_stderr
         || level > NGX_LOG_WARN
         || wrote_stderr)
@@ -202,6 +220,7 @@ ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
         return;
     }
 
+    /* 打屏的话，需要加入头信息 */
     msg -= (7 + err_levels[level].len + 3);
 
     (void) ngx_sprintf(msg, "nginx: [%V] ", &err_levels[level]);
@@ -246,10 +265,12 @@ ngx_log_abort(ngx_err_t err, const char *fmt, ...)
     va_list   args;
     u_char    errstr[NGX_MAX_CONF_ERRSTR];
 
+    /* 将格式化信息写入到缓冲区中 */
     va_start(args, fmt);
     p = ngx_vsnprintf(errstr, sizeof(errstr) - 1, fmt, args);
     va_end(args);
 
+    /* 以NGX_LOG_ALERT级别打印 */
     ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, err,
                   "%*s", p - errstr, errstr);
 }
@@ -264,12 +285,15 @@ ngx_log_stderr(ngx_err_t err, const char *fmt, ...)
 
     last = errstr + NGX_MAX_ERROR_STR;
 
+    /* 在errstr缓冲区开始处写入"nginx: " */
     p = ngx_cpymem(errstr, "nginx: ", 7);
 
+    /* 将格式化信息写入到缓冲区中 */
     va_start(args, fmt);
     p = ngx_vslprintf(p, last, fmt, args);
     va_end(args);
 
+    /* 如果有错误码，则将错误码及其对应的描述字符串也写入到缓冲区中 */
     if (err) {
         p = ngx_log_errno(p, last, err);
     }
@@ -280,10 +304,11 @@ ngx_log_stderr(ngx_err_t err, const char *fmt, ...)
 
     ngx_linefeed(p);
 
+    /* 打印信息到标准错误输出 */
     (void) ngx_write_console(ngx_stderr, errstr, p - errstr);
 }
 
-
+/* 将标准错误码及其对应的描述字符串打印到缓冲区中 */
 u_char *
 ngx_log_errno(u_char *buf, u_char *last, ngx_err_t err)
 {
@@ -304,6 +329,7 @@ ngx_log_errno(u_char *buf, u_char *last, ngx_err_t err)
     buf = ngx_slprintf(buf, last, " (%d: ", err);
 #endif
 
+    /* 根据错误码获取对应的错误码描述字符串 */
     buf = ngx_strerror(err, buf, last - buf);
 
     if (buf < last) {
@@ -495,24 +521,32 @@ ngx_log_get_file_log(ngx_log_t *head)
     return NULL;
 }
 
-
+/* 解析xxx_log指令中配置的日志级别信息 */
 static char *
 ngx_log_set_levels(ngx_conf_t *cf, ngx_log_t *log)
 {
     ngx_uint_t   i, n, d, found;
     ngx_str_t   *value;
 
+    /* cf->args->nelts == 2表明配置xxx_log指令的时候没有指定日志级别，这个时候默认采用err级别 */
     if (cf->args->nelts == 2) {
         log->log_level = NGX_LOG_ERR;
         return NGX_CONF_OK;
     }
 
+    /* 获取xxx_log指令及其参数信息 */
     value = cf->args->elts;
 
     for (i = 2; i < cf->args->nelts; i++) {
         found = 0;
 
+        /* 遍历Nginx支持的所有日志级别，匹配配置文件中配置的日志级别 */
         for (n = 1; n <= NGX_LOG_DEBUG; n++) {
+
+            /*
+             * 比较配置文件中配置的日志级别字符串与全局日志级别字符串是否相等，如果匹配到了，
+             * 则设置相应的日志级别到日志对象中，并将found标志位置位
+             */
             if (ngx_strcmp(value[i].data, err_levels[n].data) == 0) {
 
                 if (log->log_level != 0) {
@@ -522,12 +556,13 @@ ngx_log_set_levels(ngx_conf_t *cf, ngx_log_t *log)
                     return NGX_CONF_ERROR;
                 }
 
-                log->log_level = n;
-                found = 1;
+                log->log_level = n;  // 设置匹配了的日志级别
+                found = 1;  // 匹配了日志级别的标志位置位
                 break;
             }
         }
 
+        /* 匹配debug日志级别 */
         for (n = 0, d = NGX_LOG_DEBUG_FIRST; d <= NGX_LOG_DEBUG_LAST; d <<= 1) {
             if (ngx_strcmp(value[i].data, debug_levels[n++]) == 0) {
                 if (log->log_level & ~NGX_LOG_DEBUG_ALL) {
@@ -537,8 +572,8 @@ ngx_log_set_levels(ngx_conf_t *cf, ngx_log_t *log)
                     return NGX_CONF_ERROR;
                 }
 
-                log->log_level |= d;
-                found = 1;
+                log->log_level |= d;  // 在log_level中加入debug日志级别信息
+                found = 1;  // 匹配标志位置位
                 break;
             }
         }
@@ -551,6 +586,7 @@ ngx_log_set_levels(ngx_conf_t *cf, ngx_log_t *log)
         }
     }
 
+    /* 如果配置文件中配的是debug日志级别，则将日志级别扩展为包括debug相关的所有日志级别 */
     if (log->log_level == NGX_LOG_DEBUG) {
         log->log_level = NGX_LOG_DEBUG_ALL;
     }
@@ -558,12 +594,16 @@ ngx_log_set_levels(ngx_conf_t *cf, ngx_log_t *log)
     return NGX_CONF_OK;
 }
 
-
+/*
+ * error_log指令的解析函数，一条error_log指令对应一个ngx_log_t日志对象，不同的error_log
+ * 可以指定同一个日志文件，可以指定不同的日志级别。
+ */
 static char *
 ngx_error_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_log_t  *dummy;
 
+    /* 获取全局唯一的ngx_cycle_t对象中的ngx_log_t对象new_log */
     dummy = &cf->cycle->new_log;
 
     return ngx_log_set_log(cf, &dummy);
@@ -577,11 +617,15 @@ ngx_log_set_log(ngx_conf_t *cf, ngx_log_t **head)
     ngx_str_t          *value, name;
     ngx_syslog_peer_t  *peer;
 
+    /*
+     * 判断ngx_cycle_t对象中的new_log链表是否已经存在，如果不存在，则创建一个。
+     */
     if (*head != NULL && (*head)->log_level == 0) {
         new_log = *head;
 
     } else {
 
+        /* 申请一个ngx_log_t日志对象 */
         new_log = ngx_pcalloc(cf->pool, sizeof(ngx_log_t));
         if (new_log == NULL) {
             return NGX_CONF_ERROR;
@@ -592,11 +636,13 @@ ngx_log_set_log(ngx_conf_t *cf, ngx_log_t **head)
         }
     }
 
+    /* 获取配置文件中xxx_log指令及其参数 */
     value = cf->args->elts;
 
+    /* 如果xxx_log的参数为"stderr"表示需要打印日志到标准错误输出 */
     if (ngx_strcmp(value[1].data, "stderr") == 0) {
-        ngx_str_null(&name);
-        cf->cycle->log_use_stderr = 1;
+        ngx_str_null(&name);  // 初始化name
+        cf->cycle->log_use_stderr = 1;  // 标志位置位
 
         new_log->file = ngx_conf_open_file(cf->cycle, &name);
         if (new_log->file == NULL) {
@@ -663,29 +709,41 @@ ngx_log_set_log(ngx_conf_t *cf, ngx_log_t **head)
 #endif
 
     } else if (ngx_strncmp(value[1].data, "syslog:", 7) == 0) {
+        /*
+         * 如果需要打印到syslog，则xxx_log指令的第一个参数会以"syslog:"开头，
+         * 例如: error_log syslog:server=192.168.1.1 debug;
+         * access_log syslog:server=[2001:db8::1]:12345,facility=local7,tag=nginx,severity=info combined;
+         */
+
+        /* 申请一个syslog对象 */
         peer = ngx_pcalloc(cf->pool, sizeof(ngx_syslog_peer_t));
         if (peer == NULL) {
             return NGX_CONF_ERROR;
         }
 
+        /* 解析xxx_log指令的配置信息，此时配置的是打印syslog所需的信息 */
         if (ngx_syslog_process_conf(cf, peer) != NGX_CONF_OK) {
             return NGX_CONF_ERROR;
         }
 
+        /* 设置打印syslog的执行函数及其传递给该函数的参数 */
         new_log->writer = ngx_syslog_writer;
         new_log->wdata = peer;
 
     } else {
+        /* 程序执行到这里，表明xxx_log指令配置的是本机普通文件，获取相关信息 */
         new_log->file = ngx_conf_open_file(cf->cycle, &value[1]);
         if (new_log->file == NULL) {
             return NGX_CONF_ERROR;
         }
     }
 
+    /* 获取配置文件中配置的日志级别 */
     if (ngx_log_set_levels(cf, new_log) != NGX_CONF_OK) {
         return NGX_CONF_ERROR;
     }
 
+    /* 将new_log对象加入到日志对象链表中 */
     if (*head != new_log) {
         ngx_log_insert(*head, new_log);
     }
@@ -699,13 +757,18 @@ ngx_log_insert(ngx_log_t *log, ngx_log_t *new_log)
 {
     ngx_log_t  tmp;
 
+    /* 日志对象组成的链表是以日志级别进行排序的，日志级别越高，则相应的日志对象越靠后 */
+    
     if (new_log->log_level > log->log_level) {
 
         /*
          * list head address is permanent, insert new log after
          * head and swap its contents with head
          */
-
+        /*
+         * 日志链表头节点的地址是固定的，因此当插入新的日志对象的时候则需要将新的日志对象节点
+         * 插入到头节点后面，并交换头节点和新日志对象节点的内容
+         */
         tmp = *log;
         *log = *new_log;
         *new_log = tmp;

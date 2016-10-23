@@ -43,16 +43,20 @@ ngx_syslog_process_conf(ngx_conf_t *cf, ngx_syslog_peer_t *peer)
     peer->facility = NGX_CONF_UNSET_UINT;
     peer->severity = NGX_CONF_UNSET_UINT;
 
+    /* 解析配置文件中xxx_log指令指定的syslog信息 */
     if (ngx_syslog_parse_args(cf, peer) != NGX_CONF_OK) {
         return NGX_CONF_ERROR;
     }
 
+    /* 判断xxx_log指定的syslog信息是否包含了syslog server的地址信息 */
     if (peer->server.sockaddr == NULL) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "no syslog server specified");
         return NGX_CONF_ERROR;
     }
 
+    /* 如果xxx_log指定的syslog信息没有facility和severity，则设置facility和severity为默认值 */
+    
     if (peer->facility == NGX_CONF_UNSET_UINT) {
         peer->facility = 23; /* local7 */
     }
@@ -65,6 +69,7 @@ ngx_syslog_process_conf(ngx_conf_t *cf, ngx_syslog_peer_t *peer)
         ngx_str_set(&peer->tag, "nginx");
     }
 
+    /* 初始化Nginx和syslog server连接的socket描述符 */
     peer->conn.fd = (ngx_socket_t) -1;
 
     return NGX_CONF_OK;
@@ -80,21 +85,33 @@ ngx_syslog_parse_args(ngx_conf_t *cf, ngx_syslog_peer_t *peer)
     ngx_url_t    u;
     ngx_uint_t   i;
 
+    /*
+     * 获取xxx_log指令及其参数。下面流程的注解以下面这个例子为例:
+     * error_log syslog:server=[2001:db8::1]:12345,facility=local7,tag=nginx,severity=info combined;
+     */
     value = cf->args->elts;
 
+    /* 获取指向syslog:后面一个字符的指针，以上面为例，此时p指向"server"的's'字符位置 */
     p = value[1].data + sizeof("syslog:") - 1;
 
     for ( ;; ) {
+        /* 获取字符串p中首次出现','的位置 */
         comma = (u_char *) ngx_strchr(p, ',');
 
+        /*
+         * comma不为NULL，表明字符串中存在','字符，计算从p到','字符之间的字符串长度，以
+         * 上面的配置为例，此时计算的就是"server=[2001:db8::1]:12345"的长度
+         */
         if (comma != NULL) {
             len = comma - p;
             *comma = '\0';
 
         } else {
+            /* 计算从p开始到第一个参数结束的字符串长度 */
             len = value[1].data + value[1].len - p;
         }
 
+        /* 解析server参数，即"server=[2001:db8::1]:12345" */
         if (ngx_strncmp(p, "server=", 7) == 0) {
 
             if (peer->server.sockaddr != NULL) {
@@ -103,6 +120,7 @@ ngx_syslog_parse_args(ngx_conf_t *cf, ngx_syslog_peer_t *peer)
                 return NGX_CONF_ERROR;
             }
 
+            /* 解析"server=[2001:db8::1]:12345"中的地址信息 */
             ngx_memzero(&u, sizeof(ngx_url_t));
 
             u.url.data = p + 7;
@@ -119,16 +137,25 @@ ngx_syslog_parse_args(ngx_conf_t *cf, ngx_syslog_peer_t *peer)
                 return NGX_CONF_ERROR;
             }
 
+            /*
+             * 获取解析url参数得到的ip地址信息数组的第一个ip地址，因为一个url可能对应多个ip地址
+             */
             peer->server = u.addrs[0];
 
         } else if (ngx_strncmp(p, "facility=", 9) == 0) {
 
+            /* 解析facility参数，即"facility=local7" */
+            
             if (peer->facility != NGX_CONF_UNSET_UINT) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                    "duplicate syslog \"facility\"");
                 return NGX_CONF_ERROR;
             }
 
+            /* 
+             * 从全局facilities数组中匹配配置文件中配置的facility参数的值，
+             * 并记录参数值在facilities数组对应的下标 
+             */
             for (i = 0; facilities[i] != NULL; i++) {
 
                 if (ngx_strcmp(p + 9, facilities[i]) == 0) {
@@ -143,12 +170,18 @@ ngx_syslog_parse_args(ngx_conf_t *cf, ngx_syslog_peer_t *peer)
 
         } else if (ngx_strncmp(p, "severity=", 9) == 0) {
 
+            /* 解析"severity"参数，即severity=info */
+            
             if (peer->severity != NGX_CONF_UNSET_UINT) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                    "duplicate syslog \"severity\"");
                 return NGX_CONF_ERROR;
             }
 
+            /*
+             * 从全局severities数组中匹配配置文件中配置的severity参数的值，
+             * 并记录参数值在全局severities数组中的下标
+             */
             for (i = 0; severities[i] != NULL; i++) {
 
                 if (ngx_strcmp(p + 9, severities[i]) == 0) {
@@ -163,6 +196,8 @@ ngx_syslog_parse_args(ngx_conf_t *cf, ngx_syslog_peer_t *peer)
 
         } else if (ngx_strncmp(p, "tag=", 4) == 0) {
 
+            /* 解析"tag"参数，即"tag=nginx" */
+            
             if (peer->tag.data != NULL) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                    "duplicate syslog \"tag\"");
@@ -173,12 +208,14 @@ ngx_syslog_parse_args(ngx_conf_t *cf, ngx_syslog_peer_t *peer)
              * RFC 3164: the TAG is a string of ABNF alphanumeric characters
              * that MUST NOT exceed 32 characters.
              */
+            /* tag的参数值不能超过32个字节，减4是除去开头的"tag=" */
             if (len - 4 > 32) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                    "syslog tag length exceeds 32");
                 return NGX_CONF_ERROR;
             }
 
+            /* 校验"tag="后面的字符串是否合法 */
             for (i = 4; i < len; i++) {
                 c = ngx_tolower(p[i]);
 
@@ -191,10 +228,12 @@ ngx_syslog_parse_args(ngx_conf_t *cf, ngx_syslog_peer_t *peer)
                 }
             }
 
+            /* 保存tag参数的值 */
             peer->tag.data = p + 4;
             peer->tag.len = len - 4;
 
         } else if (len == 10 && ngx_strncmp(p, "nohostname", 10) == 0) {
+            /* 如果syslog配置信息中出现了"nohostname"，则将相应的标志位置位 */
             peer->nohostname = 1;
 
         } else {

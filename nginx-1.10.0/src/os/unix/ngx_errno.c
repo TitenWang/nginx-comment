@@ -28,7 +28,7 @@
 static ngx_str_t  *ngx_sys_errlist; //系统错误码对应的描述字符串都存放在这个链表里面
 static ngx_str_t   ngx_unknown_error = ngx_string("Unknown error");
 
-
+/* 根据标准错误码获取对应的错误码描述字符串 */
 u_char *
 ngx_strerror(ngx_err_t err, u_char *errstr, size_t size)
 {

@@ -48,8 +48,8 @@ typedef void (*ngx_log_writer_pt) (ngx_log_t *log, ngx_uint_t level,
 
 
 struct ngx_log_s {
-    ngx_uint_t           log_level;   //日志级别
-    ngx_open_file_t     *file;  //日志文件
+    ngx_uint_t           log_level;   //  日志级别
+    ngx_open_file_t     *file;  //  日志文件
 
     ngx_atomic_uint_t    connection;
 
@@ -58,7 +58,7 @@ struct ngx_log_s {
     ngx_log_handler_pt   handler;
     void                *data;
 
-    ngx_log_writer_pt    writer;
+    ngx_log_writer_pt    writer;  // syslog就会设置writer用于打印syslog信息
     void                *wdata;
 
     /*
