@@ -420,7 +420,13 @@ ngx_stream_optimize_servers(ngx_conf_t *cf, ngx_array_t *ports)
 
             cscf = addr->opt.ctx->srv_conf[ngx_stream_core_module.ctx_index];
 
+            /*
+             * 获取解析配置文件得到的日志对象，在ngx_configure_listening_sockets()函数中会
+             * 将ls->logp中存放的日志对象赋值给ls->log。
+             */
             ls->logp = cscf->error_log;
+            
+            /* 设置日志对象处理回调及相关参数 */
             ls->log.data = &ls->addr_text;
             ls->log.handler = ngx_accept_log_error;
 

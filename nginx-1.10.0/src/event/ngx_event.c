@@ -892,6 +892,11 @@ ngx_event_process_init(ngx_cycle_t *cycle)
         }
 
         c->type = ls[i].type;
+
+        /*
+         * 设置监听套接口连接对象的日志对象，监听套接口的日志对象是在初始化监听套接口时
+         * 从配置文件中解析得到的
+         */
         c->log = &ls[i].log;
 
         c->listening = &ls[i];
@@ -900,6 +905,7 @@ ngx_event_process_init(ngx_cycle_t *cycle)
         /*获取连接的读事件*/
         rev = c->read;
 
+        /* 设置连接读事件的日志对象为对应连接的日志对象 */
         rev->log = c->log;
         /*
          * accept为1表明可以为此事件建立连接,只有服务端监听socket的连接对象读事件的该标志位会置1,

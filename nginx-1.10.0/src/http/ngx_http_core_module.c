@@ -4075,6 +4075,12 @@ ngx_http_core_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         if (prev->error_log) {
             conf->error_log = prev->error_log;
         } else {
+            /*
+             * 如果父配置块中也没有配置error_log指令，则用全局唯一的ngx_cycle_t对象中的new_log。
+             * 这里将全局唯一的ngx_cycle_t对象中的new_log地址赋给了conf->error_log。如果全局配置块
+             * 中也没有配置error_log指令，那么在解析完配置文件之后，Nginx会打开一个默认的配置文件，
+             * logs/error.log。见ngx_log_open_default().
+             */
             conf->error_log = &cf->cycle->new_log;
         }
     }
@@ -5405,7 +5411,11 @@ ngx_http_core_open_file_cache(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return NGX_CONF_ERROR;
 }
 
-
+/*
+ * ngx_http_core_module模块中的error_log命令的解析函数，该命令可以配置在http块内的NGX_HTTP_MAIN_CONF、
+ * NGX_HTTP_SRV_CONF、NGX_HTTP_LOC_CONF中。后面涉及到合并，解析的结果存放到ngx_http_core_loc_conf_t对象
+ * 的error_log成员中。
+ */
 static char *
 ngx_http_core_error_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {

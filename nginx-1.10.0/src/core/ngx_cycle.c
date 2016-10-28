@@ -403,6 +403,11 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
             continue;
         }
 
+        /*
+         * 在打开文件时候带有O_APPEND选项，则当有多个进程往这个文件写入内容的时候，
+         * 每个操作都是原子性的，这样就保证了内容的正确性。举个例子，多个worker进程
+         * 可能存在同时往一个日志文件中写入内容的情况，这个时候每个write都是原子性的。
+         */
         file[i].fd = ngx_open_file(file[i].name.data,
                                    NGX_FILE_APPEND,
                                    NGX_FILE_CREATE_OR_OPEN,

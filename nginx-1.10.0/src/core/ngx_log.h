@@ -51,11 +51,11 @@ struct ngx_log_s {
     ngx_uint_t           log_level;   //  日志级别
     ngx_open_file_t     *file;  //  日志文件
 
-    ngx_atomic_uint_t    connection;
+    ngx_atomic_uint_t    connection;  // 一般用来存放连接对象使用的次数，参见ngx_stream_init_connection
 
     time_t               disk_full_time;
 
-    ngx_log_handler_pt   handler;
+    ngx_log_handler_pt   handler;  // 日志处理回调，不同的阶段可以设置不同的回调，从而实现日志定制
     void                *data;
 
     ngx_log_writer_pt    writer;  // syslog就会设置writer用于打印syslog信息
@@ -67,9 +67,9 @@ struct ngx_log_s {
      * their types all the time
      */
 
-    char                *action;
+    char                *action;  // 表明此时日志打印的上下文
 
-    ngx_log_t           *next;
+    ngx_log_t           *next;  // 多个日志对象通过next连接成链表
 };
 
 

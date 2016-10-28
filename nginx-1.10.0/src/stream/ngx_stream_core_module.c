@@ -161,7 +161,10 @@ ngx_stream_core_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
     return NGX_CONF_OK;
 }
 
-
+/*
+ * ngx_stream_core_module模块中的error_log命令的解析函数，该命令可以配置在stream块内的NGX_STREAM_MAIN_CONF、
+ * NGX_STREAM_SRV_CONF中。后面涉及到合并，解析的结果存放到ngx_stream_core_srv_conf_t对象的error_log成员中
+ */
 static char *
 ngx_stream_core_error_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {

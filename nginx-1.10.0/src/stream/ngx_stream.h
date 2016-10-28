@@ -141,7 +141,7 @@ typedef struct {
     ngx_stream_conf_ctx_t  *ctx;  // 存储解析server块时生成的配置项上下文
     u_char                 *file_name;  // 指向配置文件的名字
     ngx_int_t               line;
-    ngx_log_t              *error_log;  // 存储error_log指令的参数
+    ngx_log_t              *error_log;  // 存放解析stream块内的main、srv级别的error_log命令得到的对象
     ngx_flag_t              tcp_nodelay;  // 存储tcp_nodelay指令的参数
 } ngx_stream_core_srv_conf_t;
 

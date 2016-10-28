@@ -696,6 +696,7 @@ ngx_configure_listening_sockets(ngx_cycle_t *cycle)
     ls = cycle->listening.elts;
     for (i = 0; i < cycle->listening.nelts; i++) {
 
+        /* 将ngx_listening_t对象的logp成员存放的日志对象赋值给log成员 */
         ls[i].log = *ls[i].logp;
 
         if (ls[i].rcvbuf != -1) {

@@ -214,6 +214,10 @@ ngx_event_accept(ngx_event_t *ev)  //ÕâÀïµÄevÊÇÔÚngx_event_process_initº¯ÊýÖÐ¼àÌ
             }
         }
 
+        /*
+         * »ñÈ¡¼àÌýÌ×½Ó¿ÚµÄÈÕÖ¾¶ÔÏó£¬¼àÌýÌ×½Ó¿ÚµÄÈÕÖ¾¶ÔÏóÊÇÔÚ³õÊ¼»¯¼àÌýÌ×½Ó¿ÚÊ±
+         * ´ÓÅäÖÃÎÄ¼þÖÐ½âÎöµÃµ½µÄ
+         */
         *log = ls->log;
 
         c->recv = ngx_recv;
@@ -221,6 +225,7 @@ ngx_event_accept(ngx_event_t *ev)  //ÕâÀïµÄevÊÇÔÚngx_event_process_initº¯ÊýÖÐ¼àÌ
         c->recv_chain = ngx_recv_chain;
         c->send_chain = ngx_send_chain;
 
+        /* ÉèÖÃ½»»¥Ì×½Ó¿ÚÁ¬½Ó¼°Á¬½ÓÄÚ´æ³ØµÄÈÕÖ¾¶ÔÏóÎª¼àÌýÌ×½Ó¿ÚµÄÈÕÖ¾¶ÔÏó */
         c->log = log;
         c->pool->log = log;
 
