@@ -44,7 +44,7 @@ typedef struct {
     ngx_http_request_t         *request;  //指向脚本引擎所属的http请求
 } ngx_http_script_engine_t;
 
-
+/* 脚本编译对象 */
 typedef struct {
     ngx_conf_t                 *cf;
     ngx_str_t                  *source;   //指向set第二个值参数字符串

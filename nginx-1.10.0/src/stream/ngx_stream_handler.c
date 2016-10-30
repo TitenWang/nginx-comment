@@ -160,6 +160,7 @@ ngx_stream_init_connection(ngx_connection_t *c)
                   c->number, c->type == SOCK_DGRAM ? "udp " : "",
                   len, text, &addr_conf->addr_text);
 
+    /* 设置连接的日志对象信息 */
     c->log->connection = c->number;
     c->log->handler = ngx_stream_log_error;
     c->log->data = s;
@@ -345,14 +346,17 @@ ngx_stream_log_error(ngx_log_t *log, u_char *buf, size_t len)
     u_char                *p;
     ngx_stream_session_t  *s;
 
+    /* 往缓冲区中写入日志所处的上下文环境 */
     if (log->action) {
         p = ngx_snprintf(buf, len, " while %s", log->action);
         len -= p - buf;
         buf = p;
     }
 
+    /* 获取会话对象 */
     s = log->data;
 
+    /* 往缓冲区中写入连接信息 */
     p = ngx_snprintf(buf, len, ", %sclient: %V, server: %V",
                      s->connection->type == SOCK_DGRAM ? "udp " : "",
                      &s->connection->addr_text,

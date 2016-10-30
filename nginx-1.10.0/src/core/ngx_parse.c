@@ -8,7 +8,7 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 
-
+/* 解析大小信息，如32k、32m等 */
 ssize_t
 ngx_parse_size(ngx_str_t *line)
 {
@@ -24,7 +24,7 @@ ngx_parse_size(ngx_str_t *line)
     case 'k':
         len--;
         max = NGX_MAX_SIZE_T_VALUE / 1024;
-        scale = 1024;
+        scale = 1024;  // 进位转换
         break;
 
     case 'M':
@@ -39,11 +39,13 @@ ngx_parse_size(ngx_str_t *line)
         scale = 1;
     }
 
+    /* 字符串转换为数字 */
     size = ngx_atosz(line->data, len);
     if (size == NGX_ERROR || size > max) {
         return NGX_ERROR;
     }
 
+    /* 返回结果为字节大小 */
     size *= scale;
 
     return size;

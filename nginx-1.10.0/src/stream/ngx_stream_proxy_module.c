@@ -1497,7 +1497,7 @@ noupstream:
     ngx_stream_close_connection(s->connection);
 }
 
-
+/* stream子系统proxy处理上下文日志回调 */
 static u_char *
 ngx_stream_proxy_log_error(ngx_log_t *log, u_char *buf, size_t len)
 {
@@ -1506,12 +1506,14 @@ ngx_stream_proxy_log_error(ngx_log_t *log, u_char *buf, size_t len)
     ngx_stream_session_t   *s;
     ngx_stream_upstream_t  *u;
 
+    /* 获取会话对象和upstream对象 */
     s = log->data;
 
     u = s->upstream;
 
     p = buf;
 
+    /* 往缓冲区中写入远端服务器的名称 */
     if (u->peer.name) {
         p = ngx_snprintf(p, len, ", upstream: \"%V\"", u->peer.name);
         len -= p - buf;
@@ -1519,6 +1521,7 @@ ngx_stream_proxy_log_error(ngx_log_t *log, u_char *buf, size_t len)
 
     pc = u->peer.connection;
 
+    /* 往缓冲区中写入已经收发的客户端或者后端服务器的请求长度 */
     p = ngx_snprintf(p, len,
                      ", bytes from/to client:%O/%O"
                      ", bytes from/to upstream:%O/%O",

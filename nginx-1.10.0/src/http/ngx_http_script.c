@@ -117,6 +117,7 @@ ngx_http_compile_complex_value(ngx_http_compile_complex_value_t *ccv)
     nv = 0;
     nc = 0;
 
+    /* 计算变量个数 */
     for (i = 0; i < v->len; i++) {
         if (v->data[i] == '$') {
             if (v->data[i + 1] >= '1' && v->data[i + 1] <= '9') {
@@ -313,12 +314,13 @@ ngx_http_set_predicate_slot(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return NGX_CONF_OK;
 }
 
-
+/* 判断value中包含的变量的个数 */
 ngx_uint_t
 ngx_http_script_variables_count(ngx_str_t *value)
 {
     ngx_uint_t  i, n;
 
+    /* 遍历value，判断其中的'$'字符的个数，也就是变量的个数 */
     for (n = 0, i = 0; i < value->len; i++) {
         if (value->data[i] == '$') {
             n++;

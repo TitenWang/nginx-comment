@@ -35,7 +35,7 @@ static char  *severities[] = {
 static ngx_log_t    ngx_syslog_dummy_log;
 static ngx_event_t  ngx_syslog_dummy_event;
 
-
+/* 解析配置的syslog信息 */
 char *
 ngx_syslog_process_conf(ngx_conf_t *cf, ngx_syslog_peer_t *peer)
 {

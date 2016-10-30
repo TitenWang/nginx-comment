@@ -108,7 +108,7 @@ typedef struct {
     ngx_str_t                          ssl_name;
 #endif
     unsigned                           connected:1;  // 表示nginx与上游服务器建链成功
-    unsigned                           proxy_protocol:1;
+    unsigned                           proxy_protocol:1;  // 配置使用proxy_protocol协议的标志位
 } ngx_stream_upstream_t;
 
 

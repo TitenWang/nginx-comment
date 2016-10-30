@@ -878,7 +878,7 @@ ngx_conf_full_name(ngx_cycle_t *cycle, ngx_str_t *name, ngx_uint_t conf_prefix)
     return ngx_get_full_name(cycle->pool, prefix, name);
 }
 
-
+/* 该函数用来在全局唯一的ngx_cycle_t对象cycle的open_files成员中挂载一个待打开的文件 */
 ngx_open_file_t *
 ngx_conf_open_file(ngx_cycle_t *cycle, ngx_str_t *name)
 {

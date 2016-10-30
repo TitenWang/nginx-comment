@@ -152,6 +152,12 @@ ngx_stream_core_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
         if (prev->error_log) {
             conf->error_log = prev->error_log;
         } else {
+            /*
+             * 如果父配置块中也没有配置error_log指令，则用全局唯一的ngx_cycle_t对象中的new_log。
+             * 这里将全局唯一的ngx_cycle_t对象中的new_log地址赋给了conf->error_log。如果全局配置块
+             * 中也没有配置error_log指令，那么在解析完配置文件之后，Nginx会打开一个默认的配置文件，
+             * logs/error.log。见ngx_log_open_default().
+             */
             conf->error_log = &cf->cycle->new_log;
         }
     }

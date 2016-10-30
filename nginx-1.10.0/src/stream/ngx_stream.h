@@ -153,7 +153,7 @@ struct ngx_stream_session_s {
 
     off_t                   received;  // 已接收的来自客户端接的数据长度
 
-    ngx_log_handler_pt      log_handler;
+    ngx_log_handler_pt      log_handler;  // 日志回调
 
     void                  **ctx;  // 模块上下文
     void                  **main_conf;  // stream块中所有stream模块生成的配置项结构体数组
