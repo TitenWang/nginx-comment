@@ -254,7 +254,7 @@ ngx_syslog_parse_args(ngx_conf_t *cf, ngx_syslog_peer_t *peer)
     return NGX_CONF_OK;
 }
 
-
+/* 往缓冲区中写入syslog头信息 */
 u_char *
 ngx_syslog_add_header(ngx_syslog_peer_t *peer, u_char *buf)
 {
@@ -282,13 +282,16 @@ ngx_syslog_writer(ngx_log_t *log, ngx_uint_t level, u_char *buf,
 
     peer = log->wdata;
 
+    /* 如果远端机器处于busy状态，则不往其发送信息 */
     if (peer->busy) {
         return;
     }
 
+    /* 接下来会往远端机器发送信息，因此需要将远端机器的状态设置为busy，防止其他流程也往其中发送信息 */
     peer->busy = 1;
     peer->severity = level - 1;
 
+    /* 往缓冲区中写入syslog的头信息 */
     p = ngx_syslog_add_header(peer, msg);
     head_len = p - msg;
 
@@ -298,19 +301,23 @@ ngx_syslog_writer(ngx_log_t *log, ngx_uint_t level, u_char *buf,
         len = NGX_SYSLOG_MAX_STR - head_len;
     }
 
+    /* 将外部传入的缓冲区信息写入到缓冲区中 */
     p = ngx_snprintf(p, len, "%s", buf);
 
+    /* 发送缓冲区中信息 */
     (void) ngx_syslog_send(peer, msg, p - msg);
 
+    /* 无论上面是否发送成功，都会将远端服务器状态设置为空闲，以让其他流程可以往其写入syslog信息 */
     peer->busy = 0;
 }
 
-
+/* 将缓冲区中的信息发送到远端机器中 */
 ssize_t
 ngx_syslog_send(ngx_syslog_peer_t *peer, u_char *buf, size_t len)
 {
     ssize_t  n;
 
+    /* 初始化本机和远端机器的连接 */
     if (peer->conn.fd == (ngx_socket_t) -1) {
         if (ngx_syslog_init_peer(peer) != NGX_OK) {
             return NGX_ERROR;
@@ -320,6 +327,7 @@ ngx_syslog_send(ngx_syslog_peer_t *peer, u_char *buf, size_t len)
     /* log syslog socket events with valid log */
     peer->conn.log = ngx_cycle->log;
 
+    /* 发送内容 */
     if (ngx_send) {
         n = ngx_send(&peer->conn, buf, len);
 
@@ -345,7 +353,7 @@ ngx_syslog_send(ngx_syslog_peer_t *peer, u_char *buf, size_t len)
     return n;
 }
 
-
+/* 初始化本机和打印syslog的目标机器之间的连接 */
 static ngx_int_t
 ngx_syslog_init_peer(ngx_syslog_peer_t *peer)
 {
@@ -357,6 +365,7 @@ ngx_syslog_init_peer(ngx_syslog_peer_t *peer)
 
     ngx_syslog_dummy_event.log = &ngx_syslog_dummy_log;
 
+    /* 调用socket()获取socket描述符 */
     fd = ngx_socket(peer->server.sockaddr->sa_family, SOCK_DGRAM, 0);
     if (fd == (ngx_socket_t) -1) {
         ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, ngx_socket_errno,
@@ -364,18 +373,24 @@ ngx_syslog_init_peer(ngx_syslog_peer_t *peer)
         return NGX_ERROR;
     }
 
+    /* 将socket设置为非阻塞 */
     if (ngx_nonblocking(fd) == -1) {
         ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, ngx_socket_errno,
                       ngx_nonblocking_n " failed");
         goto failed;
     }
 
+    /*
+     * 调用connect和远端机器建立连接。
+     * 不理解的地方:为什么connect返回-1就认为建链失败呢?
+     */
     if (connect(fd, peer->server.sockaddr, peer->server.socklen) == -1) {
         ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, ngx_socket_errno,
                       "connect() failed");
         goto failed;
     }
 
+    /* 往内存池中的清理链表中加入一个节点，用于内存池释放时清理一些资源 */
     cln = ngx_pool_cleanup_add(peer->pool, 0);
     if (cln == NULL) {
         goto failed;

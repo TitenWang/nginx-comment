@@ -42,7 +42,7 @@ struct ngx_http_log_op_s {
 /* 日志格式对象 */
 typedef struct {
     ngx_str_t                   name;  // 日志格式名称
-    ngx_array_t                *flushes;
+    ngx_array_t                *flushes;  // 存储的是日志格式中出现的变量的下标
     ngx_array_t                *ops;        /* array of ngx_http_log_op_t */
 } ngx_http_log_fmt_t;
 
@@ -71,16 +71,16 @@ typedef struct {
  * 获取正确的访问日志路径
  */
 typedef struct {
-    ngx_array_t                *lengths;  // 存放获取变量值长度的数组
-    ngx_array_t                *values;  // 存放获取变量值的数组
+    ngx_array_t                *lengths;  // 存放获取变量值(常量字符串)长度的编译信息的数组
+    ngx_array_t                *values;  // 存放获取变量值(常量字符串)的编译信息的数组
 } ngx_http_log_script_t;
 
 
 typedef struct {
     ngx_open_file_t            *file;  // 访问日志使用的文件对象
-    ngx_http_log_script_t      *script;  // 编译访问日志路径的对象
+    ngx_http_log_script_t      *script;  // 编译访问日志路径的对象(如果路径不包含变量，则为NULL)
     time_t                      disk_full_time;
-    time_t                      error_log_time;
+    time_t                      error_log_time; // 记录写入访问日志失败或者写入不完整的那个时间
     ngx_syslog_peer_t          *syslog_peer;  // syslog对象，如果配置打印syslog，则该对象会设置，否则为NULL
     ngx_http_log_fmt_t         *format;  // 使用的日志格式
     ngx_http_complex_value_t   *filter;
@@ -252,7 +252,7 @@ static ngx_http_log_var_t  ngx_http_log_vars[] = {
     { ngx_null_string, 0, NULL }
 };
 
-
+/* NGX_HTTP_LOG_PHASE阶段的处理函数 */
 static ngx_int_t
 ngx_http_log_handler(ngx_http_request_t *r)
 {
@@ -271,10 +271,12 @@ ngx_http_log_handler(ngx_http_request_t *r)
 
     lcf = ngx_http_get_module_loc_conf(r, ngx_http_log_module);
 
+    /* 如果访问日志开关没有打开，则直接返回，不打印访问日志 */
     if (lcf->off) {
         return NGX_OK;
     }
 
+    /* 遍历配置文件中配置的所有访问日志对象，按照配置的日志格式，打印访问日志 */
     log = lcf->logs->elts;
     for (l = 0; l < lcf->logs->nelts; l++) {
 
@@ -299,8 +301,10 @@ ngx_http_log_handler(ngx_http_request_t *r)
             continue;
         }
 
+        /* 清空不可缓存的变量相关的标志位 */
         ngx_http_script_flush_no_cacheable_variables(r, log[l].format->flushes);
 
+        /* 计算日志格式中出现的变量和常量字符串的总长度，即日志格式字符串总长度 */
         len = 0;
         op = log[l].format->ops->elts;
         for (i = 0; i < log[l].format->ops->nelts; i++) {
@@ -312,9 +316,11 @@ ngx_http_log_handler(ngx_http_request_t *r)
             }
         }
 
+        /* log[l].syslog_peer不为NULL，说明需要打印syslog */
         if (log[l].syslog_peer) {
 
             /* length of syslog's PRI and HEADER message parts */
+            /* 计算syslog头部信息的长度 */
             len += sizeof("<255>Jan 01 00:00:00 ") - 1
                    + ngx_cycle->hostname.len + 1
                    + log[l].syslog_peer->tag.len + 2;
@@ -324,18 +330,28 @@ ngx_http_log_handler(ngx_http_request_t *r)
 
         len += NGX_LINEFEED_SIZE;
 
+        /* 获取日志缓冲区对象 */
         buffer = log[l].file ? log[l].file->data : NULL;
 
         if (buffer) {
 
+            /*
+             * 判断日志缓冲区中是否有足够多的剩余空间来存放本次需要打印的日志信息，
+             * 如果空间足够，则往缓冲区中写入内容，暂时不写入文件中;如果空间不够，
+             * 则将日志缓冲区中的内容写入到文件中，并腾出空间，但是此次需要打印的内容
+             * 并没有写入到缓冲区中，这个时候会在后面alloc_lilne的流程中写入到文件中。
+             */
             if (len > (size_t) (buffer->last - buffer->pos)) {
 
+                /* 将缓冲区中的内容写入到文件中 */
                 ngx_http_log_write(r, &log[l], buffer->start,
                                    buffer->pos - buffer->start);
 
+                /* 将buffer->pos设置为缓冲区的开始处，下次从这里开始写入内容 */
                 buffer->pos = buffer->start;
             }
 
+            /* 缓冲区中剩余空间足够，则将本次打印的信息写入到缓冲区中 */
             if (len <= (size_t) (buffer->last - buffer->pos)) {
 
                 p = buffer->pos;
@@ -344,12 +360,14 @@ ngx_http_log_handler(ngx_http_request_t *r)
                     ngx_add_timer(buffer->event, buffer->flush);
                 }
 
+                /* 调用日志操作对象的run回调往缓冲区中写入日志操作对象对应的日志内容 */
                 for (i = 0; i < log[l].format->ops->nelts; i++) {
                     p = op[i].run(r, p, &op[i]);
                 }
 
                 ngx_linefeed(p);
 
+                /* 更新buffer->pos为下次写入内容的起始地址 */
                 buffer->pos = p;
 
                 continue;
@@ -362,6 +380,10 @@ ngx_http_log_handler(ngx_http_request_t *r)
 
     alloc_line:
 
+        /*
+         * 由上面的流程可以看到，len是本次需要打印的访问日志的长度，下面的流程是将访问日志
+         * 写入到文件或者打印syslog到远端机器上。
+         */
         line = ngx_pnalloc(r->pool, len);
         if (line == NULL) {
             return NGX_ERROR;
@@ -369,18 +391,22 @@ ngx_http_log_handler(ngx_http_request_t *r)
 
         p = line;
 
+        /* log[l].syslog_peer不为NULL，表明是打syslog，则需要往缓冲区中加入syslog头信息 */
         if (log[l].syslog_peer) {
             p = ngx_syslog_add_header(log[l].syslog_peer, line);
         }
 
+        /* 调用日志操作对象的run回调将日志操作对象对应的访问日志内容写入到p指向的缓冲区中 */
         for (i = 0; i < log[l].format->ops->nelts; i++) {
             p = op[i].run(r, p, &op[i]);
         }
 
+        /* 发送syslog到远端机器 */
         if (log[l].syslog_peer) {
 
             size = p - line;
 
+            /* 发送内容到远端机器 */
             n = ngx_syslog_send(log[l].syslog_peer, line, size);
 
             if (n < 0) {
@@ -398,13 +424,14 @@ ngx_http_log_handler(ngx_http_request_t *r)
 
         ngx_linefeed(p);
 
+        /* 将缓冲区内容写入到日志中 */
         ngx_http_log_write(r, &log[l], line, p - line);
     }
 
     return NGX_OK;
 }
 
-
+/* 将访问日志写入到文件中 */
 static void
 ngx_http_log_write(ngx_http_request_t *r, ngx_http_log_t *log, u_char *buf,
     size_t len)
@@ -417,8 +444,9 @@ ngx_http_log_write(ngx_http_request_t *r, ngx_http_log_t *log, u_char *buf,
     ngx_http_log_buf_t  *buffer;
 #endif
 
+    /* log->script如果为NULL，说明access_log指令配置的路径中不包含变量 */
     if (log->script == NULL) {
-        name = log->file->name.data;
+        name = log->file->name.data;  // 获取日志文件名字
 
 #if (NGX_ZLIB)
         buffer = log->file->data;
@@ -430,20 +458,30 @@ ngx_http_log_write(ngx_http_request_t *r, ngx_http_log_t *log, u_char *buf,
             n = ngx_write_fd(log->file->fd, buf, len);
         }
 #else
+        /* 调用write将缓冲区内容写入到文件中 */
         n = ngx_write_fd(log->file->fd, buf, len);
 #endif
 
     } else {
+        /*
+         * 如果log->script不为NULL，则说明日志路径中包含变量，此时就要从解析配置文件时得到的
+         * 编译信息中获取完整的路径信息。
+         */
         name = NULL;
         n = ngx_http_log_script_write(r, log->script, &name, buf, len);
     }
 
+    /*
+     * n == len说明缓冲区中的内容都写入到了文件中，直接返回。如果两者不想等，说明只写了一部分
+     * 缓冲区中的内容到文件中，或者写入内容时出现了错误。
+     */
     if (n == (ssize_t) len) {
         return;
     }
 
     now = ngx_time();
 
+    /* n == -1说明写内容到文件时发生了错误 */
     if (n == -1) {
         err = ngx_errno;
 
@@ -461,6 +499,7 @@ ngx_http_log_write(ngx_http_request_t *r, ngx_http_log_t *log, u_char *buf,
         return;
     }
 
+    /* 程序执行到这里表明缓冲区中的内容只写了一部分到文件中 */
     if (now - log->error_log_time > 59) {
         ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
                       ngx_write_fd_n " to \"%s\" was incomplete: %z of %uz",
@@ -470,7 +509,7 @@ ngx_http_log_write(ngx_http_request_t *r, ngx_http_log_t *log, u_char *buf,
     }
 }
 
-
+/* 从编译信息中获取日志文件，并将缓冲区信息写入到文件中 */
 static ssize_t
 ngx_http_log_script_write(ngx_http_request_t *r, ngx_http_log_script_t *script,
     u_char **name, u_char *buf, size_t len)
@@ -533,6 +572,7 @@ ngx_http_log_script_write(ngx_http_request_t *r, ngx_http_log_script_t *script,
         }
     }
 
+    /* 从解析配置文件时得到的编译信息中获取完整的日志路径，执行完后log参数保存的日志路径 */
     if (ngx_http_script_run(r, &log, script->lengths->elts, 1,
                             script->values->elts)
         == NULL)
@@ -541,6 +581,7 @@ ngx_http_log_script_write(ngx_http_request_t *r, ngx_http_log_script_t *script,
         return len;
     }
 
+    /* 字符串末尾加上'\0'。 */
     log.data[log.len - 1] = '\0';
     *name = log.data;
 
@@ -561,6 +602,7 @@ ngx_http_log_script_write(ngx_http_request_t *r, ngx_http_log_script_t *script,
         return len;
     }
 
+    /* 打开上面获取到的日志文件 */
     if (ngx_open_cached_file(llcf->open_file_cache, &log, &of, r->pool)
         != NGX_OK)
     {
@@ -573,6 +615,7 @@ ngx_http_log_script_write(ngx_http_request_t *r, ngx_http_log_script_t *script,
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "http log #%d", of.fd);
 
+    /* 调用write写入日志 */
     n = ngx_write_fd(of.fd, buf, len);
 
     return n;
@@ -1518,6 +1561,7 @@ process_formats:
 
         /* 日志文件对象的flush回调 */
         log->file->flush = ngx_http_log_flush;
+        /* log->file->data存放日志缓冲区信息 */
         log->file->data = buffer;
     }
 

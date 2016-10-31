@@ -88,11 +88,11 @@ struct ngx_command_s {
 
 
 struct ngx_open_file_s {
-    ngx_fd_t              fd;
-    ngx_str_t             name;
+    ngx_fd_t              fd;  // 文件描述符
+    ngx_str_t             name;  // 文件的名字
 
     void                (*flush)(ngx_open_file_t *file, ngx_log_t *log);
-    void                 *data;
+    void                 *data;  // 存放日志缓冲区信息 ngx_http_log_buf_t
 };
 
 
