@@ -26,4 +26,6 @@ nginx1.10.0源代码注释
 
 2016-10-03　　此次主要是完成了ngx_http_memcached_module模块的注解，加深了对upstream机制的理解。
 
-2016-10-04　　此次主要是完成了stream机制的注解，包括配置文件解析及配置项解析结果的组织、stream机制与事件驱动模块的结合、stream负载均衡、stream访问控制、stream限制单个ip的并发连接数以及stream代理等。
+2016-10-04　　此次主要是完成了stream机制的注解，包括配置文件解析及配置项解析结果的组织、stream机制与事件驱动模块的结合、stream负载均衡、stream访问控制、stream限制单个ip的并发连接数以及stream代理等。　　　　
+
+2017-05-14    此次主要是完成了线程池ngx_thread_pool_module模块的注解，了解了其使用场景和具体的实现方式。
