@@ -433,6 +433,7 @@ ngx_epoll_init(ngx_cycle_t *cycle, ngx_msec_t timer)
 
 #if (NGX_HAVE_EVENTFD)
 
+/* notify事件初始化，notify事件常用于线程池相关任务的处理 */
 static ngx_int_t
 ngx_epoll_notify_init(ngx_log_t *log)
 {
@@ -452,17 +453,21 @@ ngx_epoll_notify_init(ngx_log_t *log)
     ngx_log_debug1(NGX_LOG_DEBUG_EVENT, log, 0,
                    "notify eventfd: %d", notify_fd);
 
+    /* 注册notify事件处理函数 */
     notify_event.handler = ngx_epoll_notify_handler;
     notify_event.log = log;
     notify_event.active = 1;
 
+    /* notify事件的连接，notify事件作为其连接的读事件 */
     notify_conn.fd = notify_fd;
     notify_conn.read = &notify_event;
     notify_conn.log = log;
 
+    /* 以边缘触发方式监听其EPOLLIN事件，即读事件 */
     ee.events = EPOLLIN|EPOLLET;
     ee.data.ptr = &notify_conn;
 
+    /* 添加到epoll中 */
     if (epoll_ctl(ep, EPOLL_CTL_ADD, notify_fd, &ee) == -1) {
         ngx_log_error(NGX_LOG_EMERG, log, ngx_errno,
                       "epoll_ctl(EPOLL_CTL_ADD, eventfd) failed");
@@ -478,7 +483,7 @@ ngx_epoll_notify_init(ngx_log_t *log)
     return NGX_OK;
 }
 
-
+/* notify事件读事件处理函数 */
 static void
 ngx_epoll_notify_handler(ngx_event_t *ev)
 {
@@ -490,6 +495,7 @@ ngx_epoll_notify_handler(ngx_event_t *ev)
     if (++ev->index == NGX_MAX_UINT32_VALUE) {
         ev->index = 0;
 
+        /* 调用read将就绪的notify事件读出来 */
         n = read(notify_fd, &count, sizeof(uint64_t));
 
         err = ngx_errno;
@@ -503,6 +509,7 @@ ngx_epoll_notify_handler(ngx_event_t *ev)
         }
     }
 
+    /* 对于 */
     handler = ev->data;
     handler(ev);
 }
@@ -784,12 +791,13 @@ ngx_epoll_del_connection(ngx_connection_t *c, ngx_uint_t flags)
 
 
 #if (NGX_HAVE_EVENTFD)
-/*封装了eventfd相关的write系统调用*/
+/* 封装了eventfd相关的write系统调用，表示eventfd对应的异步事件已经就绪 */
 static ngx_int_t
 ngx_epoll_notify(ngx_event_handler_pt handler)
 {
     static uint64_t inc = 1;
 
+    /* 将eventfd对应的异步事件处理函数设置到notify_event对象的data成员中 */
     notify_event.data = handler;
 
     if ((size_t) write(notify_fd, &inc, sizeof(uint64_t)) != sizeof(uint64_t)) {

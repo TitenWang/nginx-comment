@@ -49,12 +49,13 @@ struct ngx_event_s {
      * the event was passed or would be passed to a kernel;
      * in aio mode - operation was posted.
      */
-    unsigned         active:1; //为1表示该事件是活跃的(这个标志位为1只是表明该事件已经加入到了epoll中)
+    /* 为1表示该事件是活跃的(这个标志位为1只是表明该事件已经加入到了epoll中或者线程池中) */
+    unsigned         active:1;
 
     unsigned         disabled:1;  //禁用事件，对epoll模块无效
 
     /* the ready event; in aio mode 0 means that no operation can be posted */
-    /*为1时表示当前事件已经准备就绪(可以进行读写)，允许这个事件的消费模块处理这个事件*/
+    /* 为1时表示当前事件已经准备就绪(可以进行读写)，允许这个事件的消费模块处理这个事件 */
     unsigned         ready:1;
 
     unsigned         oneshot:1;
@@ -135,7 +136,7 @@ struct ngx_event_s {
 
     ngx_log_t       *log;  //日至对象
 
-    /*定时器节点，用于定时器红黑树中*/
+    /* 红黑树节点，用于将定时器挂载到红黑树中 */
     ngx_rbtree_node_t   timer;
 
     /* the posted queue */

@@ -339,7 +339,7 @@ ngx_stream_limit_conn_lookup(ngx_rbtree_t *rbtree, ngx_str_t *key,
     node = rbtree->root;
     sentinel = rbtree->sentinel;
     /*
-     * 遍历整个红黑树，查找到hash值对应的节点，如果找到，则返回该阶段，没有则返回NULL。
+     * 遍历整个红黑树，查找到hash值对应的节点，如果找到，则返回该节点，没有则返回NULL。
      */
     while (node != sentinel) {
 

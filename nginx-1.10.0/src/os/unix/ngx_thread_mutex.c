@@ -131,7 +131,7 @@ ngx_thread_mutex_destroy(ngx_thread_mutex_t *mtx, ngx_log_t *log)
     return NGX_OK;
 }
 
-
+/* 尝试获取互斥锁 */
 ngx_int_t
 ngx_thread_mutex_lock(ngx_thread_mutex_t *mtx, ngx_log_t *log)
 {
@@ -140,6 +140,7 @@ ngx_thread_mutex_lock(ngx_thread_mutex_t *mtx, ngx_log_t *log)
     ngx_log_debug1(NGX_LOG_DEBUG_CORE, log, 0,
                    "pthread_mutex_lock(%p) enter", mtx);
 
+    /* 线程尝试获取互斥锁 */
     err = pthread_mutex_lock(mtx);
     if (err == 0) {
         return NGX_OK;

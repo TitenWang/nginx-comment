@@ -29,7 +29,7 @@ typedef struct {
     ngx_uint_t     semaphore; //semaphore为1表示获取锁时可能使用到信号量
     sem_t          sem;       //信号量锁
 #endif
-#else                         //用文件锁是实现互斥锁
+#else                         //用文件锁实现互斥锁
     ngx_fd_t       fd;        //表示文件句柄
     u_char        *name;      //文件名
 #endif

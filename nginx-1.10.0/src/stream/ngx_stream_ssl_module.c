@@ -131,6 +131,7 @@ static ngx_command_t  ngx_stream_ssl_commands[] = {
 };
 
 
+/* ngx_stream_ssl_module模块的上下文 */
 static ngx_stream_module_t  ngx_stream_ssl_module_ctx = {
     NULL,                                  /* postconfiguration */
 
@@ -166,6 +167,7 @@ ngx_stream_ssl_create_conf(ngx_conf_t *cf)
 {
     ngx_stream_ssl_conf_t  *scf;
 
+    /* 申请用于存放ssl模块配置信息的内存 */
     scf = ngx_pcalloc(cf->pool, sizeof(ngx_stream_ssl_conf_t));
     if (scf == NULL) {
         return NULL;
@@ -183,6 +185,7 @@ ngx_stream_ssl_create_conf(ngx_conf_t *cf)
      *     scf->shm_zone = NULL;
      */
 
+    /* 初始化 */
     scf->handshake_timeout = NGX_CONF_UNSET_MSEC;
     scf->passwords = NGX_CONF_UNSET_PTR;
     scf->prefer_server_ciphers = NGX_CONF_UNSET;
@@ -393,6 +396,10 @@ ngx_stream_ssl_session_cache(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        /* 
+         * 如果配置了shared参数，说明配置了在多个子进程之间共享的会话缓存，
+         * 下面对shared字段配置进行解析
+         */
         if (value[i].len > sizeof("shared:") - 1
             && ngx_strncmp(value[i].data, "shared:", sizeof("shared:") - 1)
                == 0)
@@ -411,9 +418,11 @@ ngx_stream_ssl_session_cache(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                 goto invalid;
             }
 
+            /* 解析配置的会话缓存名字 */
             name.len = len;
             name.data = value[i].data + sizeof("shared:") - 1;
 
+            /* 解析配置的会话缓存大小 */
             size.len = value[i].len - j - 1;
             size.data = name.data + len + 1;
 
@@ -431,6 +440,10 @@ ngx_stream_ssl_session_cache(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                 return NGX_CONF_ERROR;
             }
 
+            /* 
+             * 根据解析出来的会话缓存大小申请对应的共享内存，这样的话缓存信息
+             * 可以在多个worker子进程之间共享
+             */
             scf->shm_zone = ngx_shared_memory_add(cf, &name, n,
                                                    &ngx_stream_ssl_module);
             if (scf->shm_zone == NULL) {

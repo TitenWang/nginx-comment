@@ -365,7 +365,7 @@ ngx_syslog_init_peer(ngx_syslog_peer_t *peer)
 
     ngx_syslog_dummy_event.log = &ngx_syslog_dummy_log;
 
-    /* 调用socket()获取socket描述符 */
+    /* 以SOCK_DGRAM调用socket()获取udp socket描述符 */
     fd = ngx_socket(peer->server.sockaddr->sa_family, SOCK_DGRAM, 0);
     if (fd == (ngx_socket_t) -1) {
         ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, ngx_socket_errno,
@@ -381,8 +381,19 @@ ngx_syslog_init_peer(ngx_syslog_peer_t *peer)
     }
 
     /*
-     * 调用connect和远端机器建立连接。
-     * 不理解的地方:为什么connect返回-1就认为建链失败呢?
+     * 对于是否调用connect的udp socket，做如下解释:
+     * 1. An unconnected udp socket, the default when we create a udp socket.
+     * 2. A connected udp socket, the result of calling connect on a udp socket.
+     * 调用connect和远端机器建立连接。其实udp调用connect的作用一般有三个:
+     * 1. 指定一个远端机器的ip地址和端口(可以通过再次调用connect指定新的ip地址和端口)。
+     *    调用connect指定远端ip和port后，就可以调用read和write在这个udp socket上来接收和发送
+     *    udp信息了，就可以不用在每次调用recvfrom和sendto时指定一个远端ip和port。内核会帮我
+     *    们关联这个udp socket对应的远端ip和port。
+     * 2. 对于一个已经调用过connect的udp socket，以AF_UNSPEC再次调用connect可以"断开"
+     *    一个connected udp socket。
+     * 3. 我们知道，对于"未连接"的udp socket(即默认没有调用connect的udp socket)，我们不能获取
+     *    相关的异步错误，但是对于"已连接"的udp socket，我们就可以通过errno获取异步错误。
+     * 另外，对于"connected udp socket"，其性能也会好于"unconnected udp socket"。
      */
     if (connect(fd, peer->server.sockaddr, peer->server.socklen) == -1) {
         ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, ngx_socket_errno,

@@ -2271,6 +2271,7 @@ ngx_ssl_session_cache_init(ngx_shm_zone_t *shm_zone, void *data)
     shpool->data = cache;
     shm_zone->data = cache;
 
+    /* 用红黑树来管理会话缓存信息 */
     ngx_rbtree_init(&cache->session_rbtree, &cache->sentinel,
                     ngx_ssl_session_rbtree_insert_value);
 
