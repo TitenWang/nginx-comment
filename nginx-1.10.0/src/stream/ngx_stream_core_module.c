@@ -309,7 +309,7 @@ ngx_stream_core_listen(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ls = cmcf->listen.elts;
 
     /*
-     * 遍历已经解析到的listen命令，但本次解析到的是否和之前已经解析过的listen命令一样，
+     * 遍历已经解析到的listen命令，看本次解析到的是否和之前已经解析过的listen命令一样，
      * 如果一样的话，这样是不允许的，因为不允许两个server块内同时监听同一个ip:port.
      * 在这个版本中采用的是"port != u.port"，不知道为什么用主机序和网络序的比较。
      * 这样比较是不能实现一个ip:port只能被一个server监听的，除非一个port的网络序和主机序相等。

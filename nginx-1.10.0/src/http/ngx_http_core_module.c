@@ -965,7 +965,7 @@ ngx_http_core_rewrite_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
     }
 
     /* 
-     * 如果handler方法返回NGX_DONE，表明该handler方法无法再此次调度中完成处理，而将控制权交还给事件模块，
+     * 如果handler方法返回NGX_DONE，表明该handler方法无法在此次调度中完成处理，而将控制权交还给事件模块，
      * 等待epoll再次触发该请求上的事件
      */
     if (rc == NGX_DONE) {
@@ -1004,7 +1004,7 @@ ngx_http_core_find_config_phase(ngx_http_request_t *r,
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
-    /* 如果当前请求不是子请求，但是该location只能又子请求访问，所以只能结束请求 */
+    /* 如果当前请求不是子请求，但是该location只能由子请求访问，所以只能结束请求 */
     if (!r->internal && clcf->internal) {
         ngx_http_finalize_request(r, NGX_HTTP_NOT_FOUND);
         return NGX_OK;

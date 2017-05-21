@@ -381,8 +381,14 @@ ngx_stream_optimize_servers(ngx_conf_t *cf, ngx_array_t *ports)
          * to the "*:port" only and ignore the other bindings
          */
 
+        /*
+         * 经过上面的排序，对应于同一个端口的多个ip地址，如果存在有通配符(对应的ip
+         * 地址为0.0.0.0)，那么带有通配符的地址会排在最后面。所以这里检测最后一个
+         * ip地址，如果该地址包含有通配符，那么就会设置通配符标志位，后面流程对于
+         * 这个端口就只会建立一个ngx_listening_t结构体对象。
+         */
         if (addr[last - 1].opt.wildcard) {
-            addr[last - 1].opt.bind = 1;
+            addr[last - 1].opt.bind = 1;  /* 带有通配符的地址该标志位会设置为1 */
             bind_wildcard = 1;
 
         } else {
@@ -400,7 +406,9 @@ ngx_stream_optimize_servers(ngx_conf_t *cf, ngx_array_t *ports)
          */
         while (i < last) {
 
+            /* 如果监听该端口包含的ip地址含有通配符且地址信息中bind标志位为0，条件判断才为真 */
             if (bind_wildcard && !addr[i].opt.bind) {
+                /* i只有在这个地方会进行递增，否则一直是0 */
                 i++;
                 continue;
             }
@@ -457,6 +465,7 @@ ngx_stream_optimize_servers(ngx_conf_t *cf, ngx_array_t *ports)
             /* 存放着监听该端口的所有地址信息 */
             ls->servers = stport;
 
+            /* 该ngx_listening_t类型的对象包含的ip地址个数 */
             stport->naddrs = i + 1;
 
             switch (ls->sockaddr->sa_family) {
@@ -499,9 +508,9 @@ ngx_stream_add_addrs(ngx_conf_t *cf, ngx_stream_port_t *stport,
     u_char                 buf[NGX_SOCKADDR_STRLEN];
 
     /*
-     * 申请用于存放监听同一个端口的所有ip地址信息的内存，因为存放通配符情况，
-     * 所以对于该端口只会创建一个监听套接口，也因此需要将多个地址信息管理起来，
-     * 后续该端口有请求来的时候才知道是由哪个地址来处理。
+     * 申请用于存放监听同一个端口的所有ip地址信息的内存，当配置存在通配符情况，
+     * 对于该端口只会创建一个监听套接口，因此需要将监听同一个端口的多个地址信息
+     * 管理起来，后续该端口有请求来的时候才知道是由哪个地址来处理。
      */
     stport->addrs = ngx_pcalloc(cf->pool,
                                 stport->naddrs * sizeof(ngx_stream_in_addr_t));

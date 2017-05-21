@@ -410,9 +410,11 @@ ngx_syslog_init_peer(ngx_syslog_peer_t *peer)
     cln->data = peer;
     cln->handler = ngx_syslog_cleanup;
 
+    /* 保存本机和目标机器之间的socket fd */
     peer->conn.fd = fd;
 
     /* UDP sockets are always ready to write */
+    /* 对于udp socket，随时都可以写，所以这里将其写事件的ready置位 */
     peer->conn.write->ready = 1;
 
     return NGX_OK;
